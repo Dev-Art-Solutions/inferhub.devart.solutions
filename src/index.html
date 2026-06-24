@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1.0, shrink-to-fit=no">
+  <link href="assets/images/favicon.png" rel="icon" type="image/png" />
+  <title>InferHub — self-hosted, Ollama-compatible inference mesh</title>
+  <meta name="description" content="InferHub is a self-hosted, Ollama-compatible inference mesh. Run the gateway on an always-on, GPU-less host; run worker nodes wherever the GPUs live — no port forwarding required.">
+  <meta name="author" content="Dev-Art-Solutions">
+
+  <!-- Stylesheet
+============================== -->
+  <!-- Bootstrap -->
+  <link rel="stylesheet" type="text/css" href="assets/vendor/bootstrap/css/bootstrap.min.css" />
+  <!-- Font Awesome Icon -->
+  <link rel="stylesheet" type="text/css" href="assets/vendor/font-awesome/css/all.min.css" />
+  <!-- Magnific Popup -->
+  <link rel="stylesheet" type="text/css" href="assets/vendor/magnific-popup/magnific-popup.min.css" />
+  <!-- Highlight Syntax -->
+  <link rel="stylesheet" type="text/css" href="assets/vendor/highlight.js/styles/github.css" />
+  <!-- Custom Stylesheet -->
+  <link rel="stylesheet" type="text/css" href="assets/css/stylesheet.css" />
+</head>
+
+<body data-spy="scroll" data-target=".idocs-navigation" data-offset="125">
+
+  <!-- Preloader -->
+  <div class="preloader">
+    <div class="lds-ellipsis">
+      <div></div>
+      <div></div>
+      <div></div>
+      <div></div>
+    </div>
+  </div>
+  <!-- Preloader End -->
+
+  <!-- Document Wrapper
+=============================== -->
+  <div id="main-wrapper">
+
+    <!-- Header
+  ============================ -->
+    <header id="header" class="sticky-top">
+      <!-- Navbar -->
+      <nav class="primary-menu navbar navbar-expand-lg navbar-dropdown-dark">
+        <div class="container-fluid">
+          <!-- Sidebar Toggler -->
+          <button id="sidebarCollapse" class="navbar-toggler d-block d-md-none" type="button"><span></span><span
+              class="w-75"></span><span class="w-50"></span></button>
+
+          <!-- Logo -->
+          <a class="logo ml-md-3" href="index.html" title="InferHub"> <img src="assets/images/logo.png"
+              height="100px" alt="InferHub" /> </a>
+          <!-- Logo End -->
+
+          <!-- Navbar Toggler -->
+          <button class="navbar-toggler ml-auto" type="button" data-toggle="collapse"
+            data-target="#header-nav"><span></span><span></span><span></span></button>
+
+          <div id="header-nav" class="collapse navbar-collapse justify-content-end">
+            <ul class="navbar-nav">
+              <li><a target="_blank" href="https://github.com/Dev-Art-Solutions/InferHub">GitHub</a></li>
+              <li><a target="_blank" href="https://ollamaclient.devart.solutions">OllamaClient docs</a></li>
+              <li><a target="_blank" href="https://devart.solutions">Dev-Art Solutions</a></li>
+            </ul>
+          </div>
+        </div>
+      </nav>
+      <!-- Navbar End -->
+    </header>
+    <!-- Header End -->
+
+    <!-- Content
+  ============================ -->
+    <div id="content" role="main">
+
+      <!-- Sidebar Navigation
+	============================ -->
+      <div class="idocs-navigation bg-dark docs-navigation-dark">
+        <ul class="nav flex-column ">
+          <li class="nav-item"><a class="nav-link active" href="#idocs_start">Overview</a>
+            <ul class="nav flex-column">
+              <li class="nav-item"><a class="nav-link" href="#idocs_problem">The problem</a></li>
+              <li class="nav-item"><a class="nav-link" href="#idocs_howitworks">How it works</a></li>
+            </ul>
+          </li>
+          <li class="nav-item"><a class="nav-link" href="#idocs_quickstart">Quick Start</a></li>
+          <li class="nav-item"><a class="nav-link" href="#idocs_auth">Authentication</a>
+            <ul class="nav flex-column">
+              <li class="nav-item"><a class="nav-link" href="#idocs_tokens">Token sets</a></li>
+              <li class="nav-item"><a class="nav-link" href="#idocs_secrets">Setting secrets</a></li>
+              <li class="nav-item"><a class="nav-link" href="#idocs_loopback">Loopback policy</a></li>
+            </ul>
+          </li>
+          <li class="nav-item"><a class="nav-link" href="#idocs_config">Configuration</a>
+            <ul class="nav flex-column">
+              <li class="nav-item"><a class="nav-link" href="#idocs_config_coord">Coordinator</a></li>
+              <li class="nav-item"><a class="nav-link" href="#idocs_config_node">Node</a></li>
+            </ul>
+          </li>
+          <li class="nav-item"><a class="nav-link" href="#idocs_status">Status &amp; observability</a></li>
+          <li class="nav-item"><a class="nav-link" href="#idocs_console">Management console</a></li>
+          <li class="nav-item"><a class="nav-link" href="#idocs_resilience">Resilience &amp; failover</a></li>
+          <li class="nav-item"><a class="nav-link" href="#idocs_conversations">Conversations &amp; routing</a></li>
+          <li class="nav-item"><a class="nav-link" href="#idocs_builtwith">Built with</a></li>
+          <li class="nav-item"><a class="nav-link" href="#idocs_changelog">Roadmap &amp; status</a></li>
+        </ul>
+      </div>
+
+      <!-- Docs Content
+	============================ -->
+      <div class="idocs-content">
+        <div class="container">
+
+          <!-- Overview
+		============================ -->
+          <section id="idocs_start">
+            <h1>InferHub</h1>
+            <p class="lead">A self-hosted, <a href="https://github.com/ollama/ollama" target="_blank">Ollama</a>-compatible inference mesh. Run the gateway where you have no GPU. Run worker nodes where you do.</p>
+            <p>InferHub puts a small, always-on <strong>coordinator</strong> in front of a pool of <strong>nodes</strong> that live on your GPU machines. The coordinator speaks an Ollama-shaped HTTP API; the nodes reach <em>out</em> to the coordinator over SignalR and pull jobs down — so they work fine behind NAT, with no port forwarding and nothing exposed to the public internet.</p>
+            <p>
+              <a href="https://dotnet.microsoft.com/" target="_blank">
+                <img src="https://img.shields.io/badge/.NET-10.0-512BD4.svg" alt=".NET 10.0" />
+              </a>
+              &nbsp;
+              <a href="https://github.com/Dev-Art-Solutions/InferHub/blob/main/LICENSE" target="_blank">
+                <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" />
+              </a>
+              &nbsp;
+              <a href="https://ollamaclient.devart.solutions" target="_blank">
+                <img src="https://img.shields.io/badge/built%20on-OllamaClient-2b8a3e.svg" alt="Built on OllamaClient" />
+              </a>
+            </p>
+
+            <div class="alert alert-info" role="alert">
+              <strong>The node backend is powered by <a href="https://ollamaclient.devart.solutions" target="_blank">OllamaClient</a></strong> &mdash; our open-source .NET library for Ollama. The full library documentation, configuration, and API reference live at <a href="https://ollamaclient.devart.solutions" target="_blank">ollamaclient.devart.solutions</a>.
+            </div>
+
+            <h3 id="idocs_problem">The problem</h3>
+            <p>GPUs and servers rarely live in the same place. The machine that is always on — a small VPS, a home server — usually has no GPU. The machines that <em>do</em> have a GPU — a desktop, a gaming rig, a workstation — are often behind a home router and not reachable from outside.</p>
+            <p>InferHub closes that gap. A lightweight coordinator runs on the always-on, GPU-less host and speaks a familiar Ollama-style API. The actual work runs on nodes that sit on your GPU machines, reach out to the coordinator, and pull jobs down.</p>
+            <p>In short: <strong>one stable address in front, a pool of GPUs behind it</strong>.</p>
+
+            <h3 id="idocs_howitworks">How it works</h3>
+            <pre><code class="text">                                  ┌──────────────────────────────┐
+   client (Ollama-compatible)     │          Coordinator         │
+   curl / app / IDE plugin  ─────▶│  Ollama-style HTTP API       │
+        (Bearer token if remote)  │  /api/tags /api/generate     │
+                                  │  /api/chat                   │
+                                  │                              │
+                                  │  SignalR node hub  ◀─────────┼──── persistent outbound
+                                  └───────────────┬──────────────┘     connection from nodes
+                                                  │
+                         dispatch (model-aware)   │   stream tokens back
+                          ┌───────────────────────┼───────────────────────┐
+                          ▼                       ▼                       ▼
+                   ┌────────────┐          ┌────────────┐          ┌────────────┐
+                   │   Node A   │          │   Node B   │          │   Node C   │
+                   │  + Ollama  │          │  + Ollama  │          │  + Ollama  │
+                   │  (GPU)     │          │  (GPU)     │          │  (GPU)     │
+                   └────────────┘          └────────────┘          └────────────┘
+</code></pre>
+            <ul>
+              <li><strong>Coordinator</strong> — an ASP.NET Core service. It exposes an Ollama-compatible HTTP API, authenticates remote callers with a Bearer token, keeps track of which nodes are online and which models each one holds, and routes every request to a capable node.</li>
+              <li><strong>Node</strong> — a small .NET worker. It opens a persistent outbound connection to the coordinator (so it works fine behind NAT), reports which models it can serve, then receives prompts, runs them against its local inference backend, and streams the result back.</li>
+              <li><strong>Pluggable backends</strong> — each node runs an LLM backend behind a small abstraction (<code>IInferenceBackend</code>). The first backend is <strong>Ollama</strong>, driven by our own <a href="https://ollamaclient.devart.solutions" target="_blank">OllamaClient</a> library. Other backends (vLLM, llama.cpp, OpenAI-compatible servers) can slot in later without touching the coordinator.</li>
+            </ul>
+            <p>Because the API is Ollama-shaped, existing Ollama clients, scripts, and editor plugins can point at the coordinator and keep working — they just reach a whole pool of GPUs instead of one.</p>
+          </section>
+
+          <hr class="divider">
+
+          <!-- Quick Start
+		============================ -->
+          <section id="idocs_quickstart">
+            <h2>Quick Start</h2>
+            <p class="lead">Two processes, then a single <code>curl</code>.</p>
+            <p>On the always-on host (no GPU needed) start the coordinator:</p>
+            <pre><code class="bash">dotnet run --project src/InferHub.Coordinator</code></pre>
+            <p>On each GPU machine (with Ollama already running locally on <code>:11434</code>) start a node:</p>
+            <pre><code class="bash">dotnet run --project src/InferHub.Node</code></pre>
+            <p>From anywhere, talk to the coordinator like it is Ollama. Remote calls need a Bearer token:</p>
+            <pre><code class="bash">curl http://your-coordinator:5080/api/chat \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -d '{"model":"llama3","messages":[{"role":"user","content":"Hello!"}],"stream":false}'</code></pre>
+            <p>That's it. The coordinator picks a node that holds <code>llama3</code>, runs the request there, and streams the response back.</p>
+          </section>
+
+          <hr class="divider">
+
+          <!-- Authentication
+		============================ -->
+          <section id="idocs_auth">
+            <h2>Authentication &amp; configuration</h2>
+            <p>InferHub keeps secrets out of source. Configure them at runtime via environment variables or .NET user-secrets — <code>appsettings.json</code> only ships empty placeholders.</p>
+
+            <h3 id="idocs_tokens">Three independent token sets</h3>
+            <div class="table-responsive">
+              <table class="table table-bordered">
+                <thead>
+                  <tr><th>Token set</th><th>Used by</th><th>Coordinator config key</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td>Client API keys</td><td>Inference callers (<code>/api/generate</code>, <code>/api/chat</code>, <code>/api/tags</code>)</td><td><code>Auth:ApiKeys</code></td></tr>
+                  <tr><td>Admin API keys</td><td>The management console &amp; <code>/api/admin/*</code> (cordon / drain / deregister)</td><td><code>Auth:AdminApiKeys</code></td></tr>
+                  <tr><td>Node enrollment secret</td><td>Worker nodes joining the SignalR hub</td><td><code>Auth:NodeEnrollmentSecret</code></td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p>Client and admin scopes are checked separately — an admin key cannot run inference unless it is also listed in <code>Auth:ApiKeys</code>, and vice versa.</p>
+
+            <h3 id="idocs_secrets">Setting secrets</h3>
+            <p>Coordinator — client, admin &amp; enrollment secrets:</p>
+            <pre><code class="bash"># Linux / macOS
+export Auth__ApiKeys__0="sk-client-token-1"
+export Auth__ApiKeys__1="sk-client-token-2"
+export Auth__AdminApiKeys__0="sk-admin-token"
+export Auth__NodeEnrollmentSecret="shared-node-secret"
+
+# Windows PowerShell
+$env:Auth__ApiKeys__0 = "sk-client-token-1"
+$env:Auth__AdminApiKeys__0 = "sk-admin-token"
+$env:Auth__NodeEnrollmentSecret = "shared-node-secret"</code></pre>
+            <p>Or with user-secrets (development):</p>
+            <pre><code class="bash">dotnet user-secrets --project src/InferHub.Coordinator set "Auth:ApiKeys:0" "sk-client-token-1"
+dotnet user-secrets --project src/InferHub.Coordinator set "Auth:AdminApiKeys:0" "sk-admin-token"
+dotnet user-secrets --project src/InferHub.Coordinator set "Auth:NodeEnrollmentSecret" "shared-node-secret"</code></pre>
+            <p>Node — enrollment secret:</p>
+            <pre><code class="bash">export Coordinator__EnrollmentSecret="shared-node-secret"
+# or
+dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecret" "shared-node-secret"</code></pre>
+
+            <h3 id="idocs_loopback">Loopback policy &amp; production</h3>
+            <p>By default, requests originating from <code>127.0.0.1</code> / <code>::1</code> skip the Bearer-token check — handy for local testing. Set <code>Auth__RequireAuthForLoopback=true</code> to require a token even for loopback. The same switch applies to both inference and admin routes. <strong>Remote (non-loopback) requests always require a valid token</strong>, regardless of this setting.</p>
+            <p><code>/health</code> is unauthenticated so monitoring systems can poll it.</p>
+            <p><strong>Production.</strong> Always run the coordinator behind HTTPS (a reverse proxy like Caddy / nginx, or Kestrel TLS). Bearer tokens are sensitive — don't send them over plain HTTP.</p>
+          </section>
+
+          <hr class="divider">
+
+          <!-- Configuration
+		============================ -->
+          <section id="idocs_config">
+            <h2>All configuration keys</h2>
+
+            <h3 id="idocs_config_coord">Coordinator</h3>
+            <p>Every coordinator setting lives in <code>appsettings.json</code> (or overridden via env vars / user secrets). Defaults are listed below — sensible for a single-host deployment.</p>
+            <div class="table-responsive">
+              <table class="table table-bordered">
+                <thead>
+                  <tr><th>Key</th><th>Default</th><th>Purpose</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td><code>Urls</code></td><td><code>http://localhost:5080</code></td><td>Address the coordinator listens on.</td></tr>
+                  <tr><td><code>NodeRegistry:TimeoutSeconds</code></td><td><code>30</code></td><td>Heartbeat-miss window before a node is evicted and its in-flight jobs are failed.</td></tr>
+                  <tr><td><code>NodeRegistry:ReaperIntervalSeconds</code></td><td><code>5</code></td><td>How often the reaper sweeps for stale nodes.</td></tr>
+                  <tr><td><code>Dispatcher:TimeoutSeconds</code></td><td><code>300</code></td><td>Per-job wall-clock timeout (applies to streaming and blocking).</td></tr>
+                  <tr><td><code>Router:AffinitySlidingMinutes</code></td><td><code>10</code></td><td>Sticky-conversation idle expiry.</td></tr>
+                  <tr><td><code>Router:AffinityLoadBreakThreshold</code></td><td><code>2</code></td><td>Extra in-flight jobs the sticky node may have before affinity is broken in favour of a less-busy node.</td></tr>
+                  <tr><td><code>Auth:ApiKeys</code></td><td><code>[]</code></td><td>Accepted client Bearer tokens (constant-time compared).</td></tr>
+                  <tr><td><code>Auth:AdminApiKeys</code></td><td><code>[]</code></td><td>Accepted admin Bearer tokens guarding <code>/api/admin/*</code>. Separate from <code>ApiKeys</code>.</td></tr>
+                  <tr><td><code>Auth:RequireAuthForLoopback</code></td><td><code>false</code></td><td>Force loopback callers to present a token too (applies to client and admin scopes).</td></tr>
+                  <tr><td><code>Auth:NodeEnrollmentSecret</code></td><td><em>(empty)</em></td><td>Shared secret nodes present when joining the hub. Empty disables enrollment.</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <h3 id="idocs_config_node">Node</h3>
+            <p>Every node setting lives in <code>src/InferHub.Node/appsettings.json</code> and is validated at startup — a bad value (non-URL coordinator, negative interval, <code>MaxConcurrency &lt; 1</code>) stops the process with a message naming the offending key. Env-var / user-secrets overrides work as usual (<code>Coordinator__EnrollmentSecret</code>, <code>Node__Name</code>, etc.).</p>
+            <div class="table-responsive">
+              <table class="table table-bordered">
+                <thead>
+                  <tr><th>Key</th><th>Default</th><th>Purpose</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td><code>Coordinator:Url</code></td><td><code>http://localhost:5080/</code></td><td>Coordinator base URL (must be absolute http/https).</td></tr>
+                  <tr><td><code>Coordinator:EnrollmentSecret</code></td><td><em>(empty)</em></td><td>Shared secret matching the coordinator's <code>Auth:NodeEnrollmentSecret</code>.</td></tr>
+                  <tr><td><code>Coordinator:HeartbeatInterval</code></td><td><code>00:00:10</code></td><td>How often the node pings the coordinator.</td></tr>
+                  <tr><td><code>Coordinator:ModelRefreshInterval</code></td><td><code>00:01:00</code></td><td>How often the node re-reports its model list.</td></tr>
+                  <tr><td><code>Coordinator:RetryDelay</code></td><td><code>00:00:05</code></td><td>Wait between reconnect attempts.</td></tr>
+                  <tr><td><code>Node:Name</code></td><td><em>(machine name)</em></td><td>Friendly node name shown in the status page.</td></tr>
+                  <tr><td><code>Node:MaxConcurrency</code></td><td><code>null</code></td><td>Advisory in-flight cap reported to the coordinator (null = unbounded).</td></tr>
+                  <tr><td><code>Node:Labels</code></td><td><code>{}</code></td><td>Free-form key/value pairs surfaced on <code>GET /api/nodes</code>.</td></tr>
+                  <tr><td><code>Node:Models:Include</code></td><td><code>[]</code></td><td>Whitelist of model names to advertise (empty = all).</td></tr>
+                  <tr><td><code>Node:Models:Exclude</code></td><td><code>[]</code></td><td>Names dropped before reporting.</td></tr>
+                  <tr><td><code>Backend:Type</code></td><td><code>ollama</code></td><td>Inference backend selector.</td></tr>
+                  <tr><td><code>Ollama:Endpoint</code></td><td><code>http://localhost:11434/</code></td><td>Local Ollama URL (absolute http/https). Consumed via <a href="https://ollamaclient.devart.solutions" target="_blank">OllamaClient</a>.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <hr class="divider">
+
+          <!-- Status
+		============================ -->
+          <section id="idocs_status">
+            <h2>Status &amp; observability</h2>
+            <p>A read-only status page lives at <code>/</code> (and <code>/status</code>). It auto-refreshes and shows the fleet — connected nodes, their reported models, live in-flight counts, eviction history, and failover stats.</p>
+            <p><code>GET /api/status</code> returns the same data as JSON:</p>
+            <pre><code class="json">{
+  "coordinatorVersion": "1.0.0",
+  "nowUtc": "2026-06-18T12:00:00+00:00",
+  "uptimeSeconds": 4321.5,
+  "nodes": [ { "nodeId": "...", "name": "...", "inFlight": 0, "localInFlight": 0, "modelCount": 4, "ageSeconds": 1.2 } ],
+  "models": [ { "name": "llama3", "digest": "...", "size": 4661211808 } ],
+  "metrics": {
+    "requestsTotal": 142, "requestsInFlight": 1, "requestsCompleted": 138,
+    "requestsFailed": 3, "failoversAttempted": 2, "failoversSucceeded": 2,
+    "nodesEvicted": 1, "perNode": [ ]
+  }
+}</code></pre>
+            <p><code>GET /health</code> stays unauthenticated for monitoring.</p>
+          </section>
+
+          <hr class="divider">
+
+          <!-- Console
+		============================ -->
+          <section id="idocs_console">
+            <h2>Management console &amp; admin API</h2>
+            <p>A browser console at <code>/console</code> (alias for <code>/console.html</code>) lets an operator drive the fleet — not just watch it. It is built from the same dark-theme HTML/CSS/JS as the status page (no build toolchain, no React) and uses the same admin endpoints any script can call.</p>
+
+            <h3>What you can do</h3>
+            <ul>
+              <li><strong>Cordon / Uncordon</strong> — flip a node out of (or back into) the routing pool. A cordoned node finishes its in-flight jobs and refuses new ones; the router silently skips it when picking candidates.</li>
+              <li><strong>Drain</strong> — cordon, then wait for the node's local in-flight count to reach zero. The console implements this client-side as cordon + poll, so the request stays fast and the server never holds a long-lived connection.</li>
+              <li><strong>Deregister</strong> — force-disconnect a node and drop it from the registry. If the worker process is still running it will reconnect cleanly and re-register.</li>
+              <li><strong>Live updates</strong> — the console subscribes to <code>GET /api/admin/stream</code> (Server-Sent Events) and reflects node connect / disconnect / cordon changes in ~1s without a refresh. If the stream drops it transparently falls back to polling.</li>
+              <li><strong>Last-action audit</strong> — each row shows the most recent admin action (who, when), kept in memory by the coordinator.</li>
+            </ul>
+
+            <h3>Admin endpoints</h3>
+            <p>Everything under <code>/api/admin</code>, scoped to <code>Auth:AdminApiKeys</code>.</p>
+            <div class="table-responsive">
+              <table class="table table-bordered">
+                <thead>
+                  <tr><th>Method</th><th>Path</th><th>Purpose</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td><code>GET</code></td><td><code>/api/admin/nodes</code></td><td>Richer node snapshot: cordon state, labels, max-concurrency, last action.</td></tr>
+                  <tr><td><code>GET</code></td><td><code>/api/admin/stream</code></td><td>SSE stream of fleet changes; keepalive every ~10s.</td></tr>
+                  <tr><td><code>POST</code></td><td><code>/api/admin/nodes/{nodeId}/cordon</code></td><td>Stop routing new jobs to this node.</td></tr>
+                  <tr><td><code>POST</code></td><td><code>/api/admin/nodes/{nodeId}/uncordon</code></td><td>Restore the node to the routing pool.</td></tr>
+                  <tr><td><code>POST</code></td><td><code>/api/admin/nodes/{nodeId}/deregister</code></td><td>Force-disconnect and drop the node.</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p>Example — cordon a node from the CLI:</p>
+            <pre><code class="bash">curl -X POST http://your-coordinator:5080/api/admin/nodes/&lt;nodeId&gt;/cordon \
+  -H "Authorization: Bearer YOUR_ADMIN_KEY"</code></pre>
+            <p><strong>Admin key handling in the browser.</strong> The console prompts for the admin key once per tab, keeps it in a JS variable for the session only — <strong>never</strong> in <code>localStorage</code> or <code>sessionStorage</code> — and sends it as <code>Authorization: Bearer …</code> on admin calls. A 401 re-prompts; read-only stats keep rendering either way.</p>
+          </section>
+
+          <hr class="divider">
+
+          <!-- Resilience
+		============================ -->
+          <section id="idocs_resilience">
+            <h2>Resilience &amp; failover</h2>
+            <p>InferHub is built to keep running while nodes come and go.</p>
+            <ul>
+              <li><strong>Heartbeat eviction.</strong> Nodes that miss heartbeats past <code>NodeRegistry:TimeoutSeconds</code> are dropped from the registry; their in-flight jobs fail with a clear error and their sticky-conversation mappings are cleared.</li>
+              <li><strong>Pre-stream failover.</strong> If the chosen node drops <em>before</em> the first chunk is produced, the coordinator transparently retries the request on another capable node (when one exists). This applies to both blocking and streaming calls.</li>
+              <li><strong>No silent retry mid-stream.</strong> Once chunks have started flowing, the coordinator does <strong>not</strong> retry — the client already has partial output. Instead the stream ends with a final error chunk so callers don't hang.</li>
+              <li><strong>Job timeout.</strong> <code>Dispatcher:TimeoutSeconds</code> caps how long any one job can hold a request open.</li>
+            </ul>
+          </section>
+
+          <hr class="divider">
+
+          <!-- Conversations
+		============================ -->
+          <section id="idocs_conversations">
+            <h2>Conversations &amp; routing</h2>
+            <p>InferHub stores <strong>no conversation content</strong>. Clients send the full message history on every turn, exactly like Ollama — the coordinator only decides <em>which node</em> runs the work.</p>
+            <ul>
+              <li><strong>Least-busy by default.</strong> When several nodes hold the requested model, the coordinator picks the one with the lowest in-flight job count and breaks ties round-robin.</li>
+              <li><strong>Sticky conversations.</strong> Successive turns of the same chat prefer the same node, which keeps that model's KV-cache warm. Affinity expires after ~10 idle minutes.</li>
+              <li><strong>Affinity guard.</strong> If the sticky node is far busier than the least-busy alternative, the coordinator breaks affinity to avoid piling up on one machine.</li>
+              <li><strong>Graceful fallback.</strong> If the sticky node disconnects, the next turn transparently routes to another capable node and the mapping is refreshed.</li>
+            </ul>
+            <p><strong>Tagging a conversation.</strong> By default the coordinator hashes the opening system/user message to detect a continuing thread without any client cooperation. Clients that want explicit control can attach a stable id to every turn:</p>
+            <pre><code class="bash">curl http://your-coordinator:5080/api/chat \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "X-InferHub-Conversation: my-chat-7f3a" \
+  -d '{"model":"llama3","messages":[...],"stream":false}'</code></pre>
+            <p>The header value is opaque — any stable string identifying the conversation works.</p>
+          </section>
+
+          <hr class="divider">
+
+          <!-- Built with
+		============================ -->
+          <section id="idocs_builtwith">
+            <h2>Built with</h2>
+            <ul>
+              <li><a href="https://dotnet.microsoft.com/" target="_blank">.NET 10</a> (C#)</li>
+              <li><a href="https://learn.microsoft.com/aspnet/core/" target="_blank">ASP.NET Core</a> + <a href="https://learn.microsoft.com/aspnet/core/signalr/" target="_blank">SignalR</a> for the coordinator and the node link</li>
+              <li>A pluggable node backend (<code>IInferenceBackend</code>); the first one is <strong>Ollama</strong>, via <a href="https://ollamaclient.devart.solutions" target="_blank">OllamaClient</a> — see the full <a href="https://ollamaclient.devart.solutions" target="_blank">OllamaClient documentation</a> for the underlying .NET library</li>
+              <li><a href="https://github.com/ollama/ollama" target="_blank">Ollama</a> on each node (for the Ollama backend)</li>
+            </ul>
+          </section>
+
+          <hr class="divider">
+
+          <!-- Roadmap
+		============================ -->
+          <section id="idocs_changelog">
+            <h2>Roadmap &amp; status</h2>
+            <p>InferHub <strong>1.4</strong> ships a self-hosted, Ollama-compatible inference mesh with a live management console: Bearer auth, sticky + least-busy routing, live streaming, pre-stream failover, typed/validated node config, an admin API (cordon / drain / deregister), and a browser console that updates over Server-Sent Events.</p>
+            <div class="table-responsive">
+              <table class="table table-bordered">
+                <thead>
+                  <tr><th>Phase</th><th>Theme</th><th>Version</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td>1</td><td>Foundation &amp; coordinator skeleton</td><td><code>v0.1.0</code></td></tr>
+                  <tr><td>2</td><td>Node ↔ coordinator link</td><td><code>v0.2.0</code></td></tr>
+                  <tr><td>3</td><td>Model discovery (pluggable backend)</td><td><code>v0.3.0</code></td></tr>
+                  <tr><td>4</td><td>Routing &amp; blocking generation</td><td><code>v0.4.0</code></td></tr>
+                  <tr><td>5</td><td>End-to-end streaming</td><td><code>v0.5.0</code></td></tr>
+                  <tr><td>6</td><td>Authentication &amp; security</td><td><code>v0.6.0</code></td></tr>
+                  <tr><td>7</td><td>Conversations &amp; smart routing</td><td><code>v0.7.0</code></td></tr>
+                  <tr><td>8</td><td>Resilience, observability &amp; 1.0</td><td><code>v1.0.0</code></td></tr>
+                  <tr><td>9</td><td>Typed, validated node configuration</td><td><code>v1.1.0</code></td></tr>
+                  <tr><td>10</td><td>Coordinator admin API</td><td><code>v1.2.0</code></td></tr>
+                  <tr><td>11</td><td>Management console UI</td><td><code>v1.3.0</code></td></tr>
+                  <tr><td>12</td><td>Live updates &amp; console hardening</td><td><code>v1.4.0</code></td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p><strong>What's next.</strong> Beyond 1.4 we may look at multi-coordinator clustering, persisted affinity, richer audit trails, and additional inference backends (vLLM, llama.cpp).</p>
+            <p class="text-muted"><small>Made by <a href="https://devart.solutions" target="_blank">Dev Art Solutions</a>. We build production-ready AI and agent systems. Say hello: <a href="mailto:hello@devart.solutions">hello@devart.solutions</a></small></p>
+          </section>
+
+        </div>
+      </div>
+
+    </div>
+    <!-- Content end -->
+
+    <!-- Footer
+  ============================ -->
+    <footer id="footer" class="section bg-dark footer-text-light">
+      <div class="container">
+      </div>
+    </footer>
+    <!-- Footer end -->
+
+  </div>
+  <!-- Document Wrapper end -->
+
+  <!-- Back To Top -->
+  <a id="back-to-top" data-toggle="tooltip" title="Back to Top" href="javascript:void(0)"><i
+      class="fa fa-chevron-up"></i></a>
+
+  <!-- JavaScript
+============================ -->
+  <script src="assets/vendor/jquery/jquery.min.js"></script>
+  <script src="assets/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>
+  <!-- Highlight JS -->
+  <script src="assets/vendor/highlight.js/highlight.min.js"></script>
+  <!-- Easing -->
+  <script src="assets/vendor/jquery.easing/jquery.easing.min.js"></script>
+  <!-- Magnific Popup -->
+  <script src="assets/vendor/magnific-popup/jquery.magnific-popup.min.js"></script>
+  <!-- Custom Script -->
+  <script src="assets/js/theme.js"></script>
+</body>
+
+</html>
