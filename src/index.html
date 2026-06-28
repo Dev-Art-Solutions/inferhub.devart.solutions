@@ -103,6 +103,7 @@
           </li>
           <li class="nav-item"><a class="nav-link" href="#idocs_status">Status &amp; observability</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_console">Management console</a></li>
+          <li class="nav-item"><a class="nav-link" href="#idocs_vector">Vector store</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_resilience">Resilience &amp; failover</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_conversations">Conversations &amp; routing</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_builtwith">Built with</a></li>
@@ -264,6 +265,12 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
                   <tr><td><code>Auth:AdminApiKeys</code></td><td><code>[]</code></td><td>Accepted admin Bearer tokens guarding <code>/api/admin/*</code>. Separate from <code>ApiKeys</code>.</td></tr>
                   <tr><td><code>Auth:RequireAuthForLoopback</code></td><td><code>false</code></td><td>Force loopback callers to present a token too (applies to client and admin scopes).</td></tr>
                   <tr><td><code>Auth:NodeEnrollmentSecret</code></td><td><em>(empty)</em></td><td>Shared secret nodes present when joining the hub. Empty disables enrollment.</td></tr>
+                  <tr><td><code>VectorStore:Enabled</code></td><td><code>false</code></td><td>Master switch for the embedded vector store (phase 13+). Off = no persisted state, original v1.4 contract.</td></tr>
+                  <tr><td><code>VectorStore:DataDirectory</code></td><td><code>./data/vectors</code></td><td>Where the raw store + snapshots live on the coordinator.</td></tr>
+                  <tr><td><code>VectorStore:Distance</code></td><td><code>cosine</code></td><td>Default similarity metric (<code>cosine</code> | <code>dot</code> | <code>l2</code>).</td></tr>
+                  <tr><td><code>VectorStore:SnapshotEveryOps</code></td><td><code>5000</code></td><td>Ops appended before a compacted snapshot is written and the ops tail is truncated.</td></tr>
+                  <tr><td><code>VectorStore:ReplicationFactor</code></td><td><code>2</code></td><td>Target node replicas per collection (used by phase 15; capped at node count).</td></tr>
+                  <tr><td><code>VectorStore:DefaultEmbeddingModel</code></td><td><code>nomic-embed-text</code></td><td>Model used when a text upsert/query omits one (consumed by phase 14).</td></tr>
                 </tbody>
               </table>
             </div>
@@ -357,6 +364,67 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
 
           <hr class="divider">
 
+          <!-- Vector store
+		============================ -->
+          <section id="idocs_vector">
+            <h2>Vector store</h2>
+            <p class="lead">As of <strong>v1.5.0</strong> InferHub ships with a local, embedded vector store on the coordinator. No external database, no extra service to run.</p>
+            <p>Two layers, kept honest:</p>
+            <ul>
+              <li><strong>Raw store</strong> — an append-only log of vector ops on disk (plus a periodic compacted snapshot) under <code>VectorStore:DataDirectory</code>. Plain newline-delimited JSON, one folder per collection. Source of truth, copyable, backupable.</li>
+              <li><strong>Index</strong> — a flat (exact) cosine/dot/L2 structure in memory, rebuilt from the raw store at boot. Disposable; the raw store is what survives a restart.</li>
+            </ul>
+            <p>It is <strong>off by default</strong> — flip <code>VectorStore:Enabled</code> to <code>true</code> to opt in. While disabled, the coordinator persists nothing, just like v1.4.</p>
+
+            <h3>Endpoints</h3>
+            <p>Collection lifecycle sits under the admin scope; record CRUD and querying are client-scoped, alongside <code>/api/chat</code> and <code>/api/generate</code>.</p>
+            <div class="table-responsive">
+              <table class="table table-bordered">
+                <thead>
+                  <tr><th>Method</th><th>Path</th><th>Scope</th><th>Purpose</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td><code>GET</code></td><td><code>/api/admin/vector/collections</code></td><td>Admin</td><td>List collections (name, dimension, distance, record count).</td></tr>
+                  <tr><td><code>POST</code></td><td><code>/api/admin/vector/collections</code></td><td>Admin</td><td>Create a collection: <code>{ "name", "dimension", "distance" }</code>.</td></tr>
+                  <tr><td><code>DELETE</code></td><td><code>/api/admin/vector/collections/{collection}</code></td><td>Admin</td><td>Drop a collection and remove its raw files.</td></tr>
+                  <tr><td><code>POST</code></td><td><code>/api/vector/{collection}/upsert</code></td><td>Client</td><td>Insert or replace a record by id: <code>{ "id", "vector", "payload"?, "metadata"? }</code>.</td></tr>
+                  <tr><td><code>POST</code></td><td><code>/api/vector/{collection}/query</code></td><td>Client</td><td>Nearest-neighbour search: <code>{ "vector", "k", "filter"? }</code> → ranked matches.</td></tr>
+                  <tr><td><code>GET</code></td><td><code>/api/vector/{collection}/{id}</code></td><td>Client</td><td>Fetch a single record by id.</td></tr>
+                  <tr><td><code>DELETE</code></td><td><code>/api/vector/{collection}/{id}</code></td><td>Client</td><td>Delete a record (tombstoned in the raw store).</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <h3>Quick walk-through</h3>
+            <p>Create a collection (admin token):</p>
+            <pre><code class="bash">curl -X POST http://your-coordinator:5080/api/admin/vector/collections \
+  -H "Authorization: Bearer YOUR_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"docs","dimension":3,"distance":"cosine"}'</code></pre>
+            <p>Upsert a record (client token):</p>
+            <pre><code class="bash">curl -X POST http://your-coordinator:5080/api/vector/docs/upsert \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"id":"doc-1","vector":[0.12,0.84,0.03],"metadata":{"source":"readme"}}'</code></pre>
+            <p>Query the nearest matches:</p>
+            <pre><code class="bash">curl -X POST http://your-coordinator:5080/api/vector/docs/query \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"vector":[0.10,0.80,0.05],"k":4}'</code></pre>
+
+            <h3>What's coming next</h3>
+            <p>v1.5 is the foundation — the storage contract everything else stands on. Subsequent releases build on top of it:</p>
+            <ul>
+              <li><strong>v1.6.0</strong> — embeddings on the nodes (text-in upsert and query, drop-in <code>/api/embed</code>).</li>
+              <li><strong>v1.7.0</strong> — replication across the fleet; node-served queries.</li>
+              <li><strong>v1.8.0</strong> — self-healing when a node drops; rebuild from the raw store automatically.</li>
+              <li><strong>v1.9.0</strong> — console surface for collections and replica health.</li>
+              <li><strong>v2.0.0</strong> — retrieval wired straight into <code>/api/chat</code> and <code>/api/generate</code>: the "RAG mesh" milestone.</li>
+            </ul>
+          </section>
+
+          <hr class="divider">
+
           <!-- Resilience
 		============================ -->
           <section id="idocs_resilience">
@@ -411,7 +479,7 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
 		============================ -->
           <section id="idocs_changelog">
             <h2>Roadmap &amp; status</h2>
-            <p>InferHub <strong>1.4</strong> ships a self-hosted, Ollama-compatible inference mesh with a live management console: Bearer auth, sticky + least-busy routing, live streaming, pre-stream failover, typed/validated node config, an admin API (cordon / drain / deregister), and a browser console that updates over Server-Sent Events.</p>
+            <p>InferHub <strong>1.5</strong> adds an embedded vector store on the coordinator — local, file-backed, off by default — on top of the v1.4 base: Bearer auth, sticky + least-busy routing, live streaming, pre-stream failover, typed/validated node config, an admin API (cordon / drain / deregister), and a browser console that updates over Server-Sent Events.</p>
             <div class="table-responsive">
               <table class="table table-bordered">
                 <thead>
@@ -430,10 +498,11 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
                   <tr><td>10</td><td>Coordinator admin API</td><td><code>v1.2.0</code></td></tr>
                   <tr><td>11</td><td>Management console UI</td><td><code>v1.3.0</code></td></tr>
                   <tr><td>12</td><td>Live updates &amp; console hardening</td><td><code>v1.4.0</code></td></tr>
+                  <tr><td>13</td><td>Vector store foundation</td><td><code>v1.5.0</code></td></tr>
                 </tbody>
               </table>
             </div>
-            <p><strong>What's next.</strong> Beyond 1.4 we may look at multi-coordinator clustering, persisted affinity, richer audit trails, and additional inference backends (vLLM, llama.cpp).</p>
+            <p><strong>What's next.</strong> Phases 14–18 turn the storage layer into a full RAG mesh: fleet embeddings (<code>v1.6.0</code>), replication across nodes (<code>v1.7.0</code>), self-healing when a node drops (<code>v1.8.0</code>), console surface for collections and replicas (<code>v1.9.0</code>), and finally inline retrieval on <code>/api/chat</code> and <code>/api/generate</code> for the <code>v2.0.0</code> GA. Beyond the vector track: multi-coordinator clustering, persisted affinity, richer audit trails, and additional inference backends (vLLM, llama.cpp) stay on the table.</p>
             <p class="text-muted"><small>Made by <a href="https://devart.solutions" target="_blank">Dev Art Solutions</a>. We build production-ready AI and agent systems. Say hello: <a href="mailto:hello@devart.solutions">hello@devart.solutions</a></small></p>
           </section>
 
