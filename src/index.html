@@ -368,7 +368,7 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
 		============================ -->
           <section id="idocs_vector">
             <h2>Vector store</h2>
-            <p class="lead">As of <strong>v1.5.0</strong> InferHub ships with a local, embedded vector store on the coordinator. No external database, no extra service to run.</p>
+            <p class="lead">As of <strong>v1.5.0</strong> InferHub ships with a local, embedded vector store on the coordinator. <strong>v1.6.0</strong> closes the text loop: embedding runs where the GPUs are, the coordinator stores and searches the result.</p>
             <p>Two layers, kept honest:</p>
             <ul>
               <li><strong>Raw store</strong> — an append-only log of vector ops on disk (plus a periodic compacted snapshot) under <code>VectorStore:DataDirectory</code>. Plain newline-delimited JSON, one folder per collection. Source of truth, copyable, backupable.</li>
@@ -391,9 +391,24 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
                   <tr><td><code>POST</code></td><td><code>/api/vector/{collection}/query</code></td><td>Client</td><td>Nearest-neighbour search: <code>{ "vector", "k", "filter"? }</code> → ranked matches.</td></tr>
                   <tr><td><code>GET</code></td><td><code>/api/vector/{collection}/{id}</code></td><td>Client</td><td>Fetch a single record by id.</td></tr>
                   <tr><td><code>DELETE</code></td><td><code>/api/vector/{collection}/{id}</code></td><td>Client</td><td>Delete a record (tombstoned in the raw store).</td></tr>
+                  <tr><td><code>POST</code></td><td><code>/api/vector/{collection}/retrieve</code></td><td>Client</td><td><strong>v1.6+</strong> — convenience RAG read: <code>{ "text", "k", "model"? }</code> → matched records (text → embed → search → matches).</td></tr>
+                  <tr><td><code>POST</code></td><td><code>/api/embed</code></td><td>Client</td><td><strong>v1.6+</strong> — Ollama-shaped embeddings endpoint; dispatched to a node holding the requested model.</td></tr>
+                  <tr><td><code>POST</code></td><td><code>/api/embeddings</code></td><td>Client</td><td><strong>v1.6+</strong> — legacy single-string embeddings shape; translated to the modern batch form internally.</td></tr>
                 </tbody>
               </table>
             </div>
+
+            <h3>Text in, vectors out (v1.6+)</h3>
+            <p>From v1.6 onwards <code>upsert</code> and <code>query</code> accept <code>text</code> in place of a raw <code>vector</code>. The coordinator dispatches an <code>embed</code> job to a node advertising the requested embedding model, then stores or searches with the returned vector. The raw-vector path from v1.5 is unchanged.</p>
+            <pre><code class="bash">curl -X POST http://your-coordinator:5080/api/vector/docs/upsert \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"id":"doc-1","text":"InferHub now embeds on the fleet.","model":"nomic-embed-text"}'</code></pre>
+            <pre><code class="bash">curl -X POST http://your-coordinator:5080/api/vector/docs/retrieve \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"text":"how does embedding work?","k":4}'</code></pre>
+            <p><code>VectorStore:DefaultEmbeddingModel</code> kicks in when <code>model</code> is omitted. The collection's dimension is validated against the returned embedding length — a mismatch surfaces as a clear <code>400</code>; no embedding node available surfaces as a <code>404</code> naming the model.</p>
 
             <h3>Quick walk-through</h3>
             <p>Create a collection (admin token):</p>
@@ -415,7 +430,7 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
             <h3>What's coming next</h3>
             <p>v1.5 is the foundation — the storage contract everything else stands on. Subsequent releases build on top of it:</p>
             <ul>
-              <li><strong>v1.6.0</strong> — embeddings on the nodes (text-in upsert and query, drop-in <code>/api/embed</code>).</li>
+              <li><s><strong>v1.6.0</strong> — embeddings on the nodes (text-in upsert and query, drop-in <code>/api/embed</code>).</s> <em>shipped.</em></li>
               <li><strong>v1.7.0</strong> — replication across the fleet; node-served queries.</li>
               <li><strong>v1.8.0</strong> — self-healing when a node drops; rebuild from the raw store automatically.</li>
               <li><strong>v1.9.0</strong> — console surface for collections and replica health.</li>
@@ -479,7 +494,7 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
 		============================ -->
           <section id="idocs_changelog">
             <h2>Roadmap &amp; status</h2>
-            <p>InferHub <strong>1.5</strong> adds an embedded vector store on the coordinator — local, file-backed, off by default — on top of the v1.4 base: Bearer auth, sticky + least-busy routing, live streaming, pre-stream failover, typed/validated node config, an admin API (cordon / drain / deregister), and a browser console that updates over Server-Sent Events.</p>
+            <p>InferHub <strong>1.6</strong> closes the embedding loop: text in, vectors out, with the heavy lifting on the GPU nodes and the storage on the coordinator. This sits on top of the v1.5 vector store and the v1.4 base (Bearer auth, sticky + least-busy routing, live streaming, pre-stream failover, typed/validated node config, an admin API, and a live management console).</p>
             <div class="table-responsive">
               <table class="table table-bordered">
                 <thead>
@@ -499,10 +514,11 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
                   <tr><td>11</td><td>Management console UI</td><td><code>v1.3.0</code></td></tr>
                   <tr><td>12</td><td>Live updates &amp; console hardening</td><td><code>v1.4.0</code></td></tr>
                   <tr><td>13</td><td>Vector store foundation</td><td><code>v1.5.0</code></td></tr>
+                  <tr><td>14</td><td>Embeddings &amp; retrieval</td><td><code>v1.6.0</code></td></tr>
                 </tbody>
               </table>
             </div>
-            <p><strong>What's next.</strong> Phases 14–18 turn the storage layer into a full RAG mesh: fleet embeddings (<code>v1.6.0</code>), replication across nodes (<code>v1.7.0</code>), self-healing when a node drops (<code>v1.8.0</code>), console surface for collections and replicas (<code>v1.9.0</code>), and finally inline retrieval on <code>/api/chat</code> and <code>/api/generate</code> for the <code>v2.0.0</code> GA. Beyond the vector track: multi-coordinator clustering, persisted affinity, richer audit trails, and additional inference backends (vLLM, llama.cpp) stay on the table.</p>
+            <p><strong>What's next.</strong> Phases 15–18 build out the rest of the RAG mesh: replication across nodes (<code>v1.7.0</code>), self-healing when a node drops (<code>v1.8.0</code>), console surface for collections and replicas (<code>v1.9.0</code>), and finally inline retrieval on <code>/api/chat</code> and <code>/api/generate</code> for the <code>v2.0.0</code> GA. Beyond the vector track: multi-coordinator clustering, persisted affinity, richer audit trails, and additional inference backends (vLLM, llama.cpp) stay on the table.</p>
             <p class="text-muted"><small>Made by <a href="https://devart.solutions" target="_blank">Dev Art Solutions</a>. We build production-ready AI and agent systems. Say hello: <a href="mailto:hello@devart.solutions">hello@devart.solutions</a></small></p>
           </section>
 
