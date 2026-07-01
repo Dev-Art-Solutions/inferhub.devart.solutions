@@ -273,6 +273,9 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
                   <tr><td><code>VectorStore:DefaultEmbeddingModel</code></td><td><code>nomic-embed-text</code></td><td>Model used when a text upsert/query omits one (consumed by phase 14).</td></tr>
                   <tr><td><code>VectorStore:Healing:DebounceMilliseconds</code></td><td><code>750</code></td><td><strong>v1.8+</strong> — debounce window that collapses fleet-event bursts into a single heal pass (min <code>50</code>).</td></tr>
                   <tr><td><code>VectorStore:Healing:IdleSweepSeconds</code></td><td><code>15</code></td><td><strong>v1.8+</strong> — interval at which the under-replication gauge is refreshed when nothing in the fleet changes (min <code>1</code>).</td></tr>
+                  <tr><td><code>VectorStore:Retrieval:DefaultK</code></td><td><code>4</code></td><td>Top-k injected when a request opts into retrieval (consumed by phase 18).</td></tr>
+                  <tr><td><code>VectorStore:Retrieval:MaxRecords</code></td><td><code>8</code></td><td>Hard cap on injected records per retrieval request (must be ≥ DefaultK).</td></tr>
+                  <tr><td><code>VectorStore:Retrieval:OnMissing</code></td><td><code>error</code></td><td><code>error</code> | <code>passthrough</code> when retrieval can't run (store disabled, unknown collection, no embedding node).</td></tr>
                 </tbody>
               </table>
             </div>
@@ -310,17 +313,27 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
           <section id="idocs_status">
             <h2>Status &amp; observability</h2>
             <p>A read-only status page lives at <code>/</code> (and <code>/status</code>). It auto-refreshes and shows the fleet — connected nodes, their reported models, live in-flight counts, eviction history, and failover stats.</p>
-            <p><code>GET /api/status</code> returns the same data as JSON:</p>
+            <p><code>GET /api/status</code> returns the same data as JSON. From <strong>v1.9</strong>, it gains a <code>vector</code> block when the store is enabled — omitted otherwise, so consumers that ignored the field before see no change:</p>
             <pre><code class="json">{
-  "coordinatorVersion": "1.0.0",
-  "nowUtc": "2026-06-18T12:00:00+00:00",
+  "coordinatorVersion": "1.9.0",
+  "nowUtc": "2026-07-01T12:00:00+00:00",
   "uptimeSeconds": 4321.5,
   "nodes": [ { "nodeId": "...", "name": "...", "inFlight": 0, "localInFlight": 0, "modelCount": 4, "ageSeconds": 1.2 } ],
   "models": [ { "name": "llama3", "digest": "...", "size": 4661211808 } ],
   "metrics": {
     "requestsTotal": 142, "requestsInFlight": 1, "requestsCompleted": 138,
     "requestsFailed": 3, "failoversAttempted": 2, "failoversSucceeded": 2,
-    "nodesEvicted": 1, "perNode": [ ]
+    "nodesEvicted": 1,
+    "vectorReplicasHealed": 3, "vectorRebuildsFromRaw": 1, "vectorUnderReplicated": 0,
+    "perNode": [ ],
+    "perCollection": [ { "collection": "docs", "queries": 42, "queryLatencyAvgMs": 3.1 } ]
+  },
+  "vector": {
+    "collections": [
+      { "name": "docs", "dimension": 768, "distance": "cosine", "recordCount": 1240,
+        "targetReplicas": 2, "liveReplicas": 2, "replicaNodes": ["node-a","node-b"],
+        "underReplicated": false }
+    ]
   }
 }</code></pre>
             <p><code>GET /health</code> stays unauthenticated for monitoring.</p>
@@ -341,6 +354,8 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
               <li><strong>Deregister</strong> — force-disconnect a node and drop it from the registry. If the worker process is still running it will reconnect cleanly and re-register.</li>
               <li><strong>Live updates</strong> — the console subscribes to <code>GET /api/admin/stream</code> (Server-Sent Events) and reflects node connect / disconnect / cordon changes in ~1s without a refresh. If the stream drops it transparently falls back to polling.</li>
               <li><strong>Last-action audit</strong> — each row shows the most recent admin action (who, when), kept in memory by the coordinator.</li>
+              <li><strong>v1.9 — Vector collections panel.</strong> Per-collection record count, target vs live replicas with an under-replicated badge, holder node ids, and a Rebuild button that calls the admin rebuild endpoint.</li>
+              <li><strong>v1.9 — Vector activity feed.</strong> Rolling live view of the last 40 vector events (created / dropped / assigned / lost / heal.started / heal.completed) with colour cues, over the same SSE stream.</li>
             </ul>
 
             <h3>Admin endpoints</h3>
@@ -352,7 +367,7 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
                 </thead>
                 <tbody>
                   <tr><td><code>GET</code></td><td><code>/api/admin/nodes</code></td><td>Richer node snapshot: cordon state, labels, max-concurrency, last action.</td></tr>
-                  <tr><td><code>GET</code></td><td><code>/api/admin/stream</code></td><td>SSE stream of fleet changes; keepalive every ~10s.</td></tr>
+                  <tr><td><code>GET</code></td><td><code>/api/admin/stream</code></td><td>SSE stream of fleet changes; keepalive every ~10s. <strong>v1.9+</strong> — also carries vector lifecycle events (<code>vector.collection.created</code>, <code>vector.collection.dropped</code>, <code>vector.replica.assigned</code>, <code>vector.replica.lost</code>, <code>vector.heal.started</code>, <code>vector.heal.completed</code>).</td></tr>
                   <tr><td><code>POST</code></td><td><code>/api/admin/nodes/{nodeId}/cordon</code></td><td>Stop routing new jobs to this node.</td></tr>
                   <tr><td><code>POST</code></td><td><code>/api/admin/nodes/{nodeId}/uncordon</code></td><td>Restore the node to the routing pool.</td></tr>
                   <tr><td><code>POST</code></td><td><code>/api/admin/nodes/{nodeId}/deregister</code></td><td>Force-disconnect and drop the node.</td></tr>
@@ -371,7 +386,7 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
 		============================ -->
           <section id="idocs_vector">
             <h2>Vector store</h2>
-            <p class="lead">As of <strong>v1.5.0</strong> InferHub ships with a local, embedded vector store on the coordinator. <strong>v1.6.0</strong> closes the text loop. <strong>v1.7.0</strong> spreads each collection's index across the connected nodes and lets queries be served by a node, not just the coordinator. <strong>v1.8.0</strong> makes that placement self-healing — lose a holder and the index is rebuilt on a survivor from the raw store, automatically.</p>
+            <p class="lead">As of <strong>v1.5.0</strong> InferHub ships with a local, embedded vector store on the coordinator. <strong>v1.6.0</strong> closes the text loop. <strong>v1.7.0</strong> spreads each collection's index across the connected nodes and lets queries be served by a node, not just the coordinator. <strong>v1.8.0</strong> makes that placement self-healing — lose a holder and the index is rebuilt on a survivor from the raw store, automatically. <strong>v1.9.0</strong> puts all of it on the console: collections, replica health, and live healing events land in the same build-free UI over SSE.</p>
             <p>Two layers, kept honest:</p>
             <ul>
               <li><strong>Raw store</strong> — an append-only log of vector ops on disk (plus a periodic compacted snapshot) under <code>VectorStore:DataDirectory</code>. Plain newline-delimited JSON, one folder per collection. Source of truth, copyable, backupable. <strong>Lives on the coordinator</strong>.</li>
@@ -387,7 +402,8 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
                   <tr><th>Method</th><th>Path</th><th>Scope</th><th>Purpose</th></tr>
                 </thead>
                 <tbody>
-                  <tr><td><code>GET</code></td><td><code>/api/admin/vector/collections</code></td><td>Admin</td><td>List collections (name, dimension, distance, record count).</td></tr>
+                  <tr><td><code>GET</code></td><td><code>/api/admin/vector/collections</code></td><td>Admin</td><td>List collections (name, dimension, distance, record count) with placement (target vs live replicas, holder node ids).</td></tr>
+                  <tr><td><code>GET</code></td><td><code>/api/admin/vector/collections/{collection}</code></td><td>Admin</td><td><strong>v1.9+</strong> — per-collection detail: collection info, placement, <code>underReplicated</code> flag, and query stats (<code>queries</code>, <code>queryLatencyAvgMs</code>).</td></tr>
                   <tr><td><code>POST</code></td><td><code>/api/admin/vector/collections</code></td><td>Admin</td><td>Create a collection: <code>{ "name", "dimension", "distance" }</code>.</td></tr>
                   <tr><td><code>DELETE</code></td><td><code>/api/admin/vector/collections/{collection}</code></td><td>Admin</td><td>Drop a collection and remove its raw files.</td></tr>
                   <tr><td><code>POST</code></td><td><code>/api/admin/vector/collections/{collection}/rebuild</code></td><td>Admin</td><td><strong>v1.8+</strong> — force a heal-to-target re-push from the raw store. Audit-logged as <code>vector.rebuild</code>.</td></tr>
@@ -453,13 +469,25 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
               <li><strong>Metrics.</strong> <code>vectorReplicasHealed</code> (each replica added by a heal), <code>vectorRebuildsFromRaw</code> (each last-node-down or admin rebuild), and <code>vectorUnderReplicated</code> (gauge of collections currently below target) join the metrics snapshot. They surface in the console in phase 17.</li>
             </ul>
 
+            <h3>Console &amp; observability (v1.9+)</h3>
+            <p>v1.9 makes the mesh visible and operable. Nothing on the write path changed — this is pure surface area.</p>
+            <ul>
+              <li><strong>Status <code>vector</code> block.</strong> <code>GET /api/status</code> now returns per-collection record count, dimension, distance, target vs live replicas, holder node ids, and an <code>underReplicated</code> flag. Omitted when the store is disabled, so consumers that ignored the field before see no change.</li>
+              <li><strong>Live vector events on <code>/api/admin/stream</code>.</strong> Six new event kinds ride the same SSE channel as the fleet snapshot: <code>vector.collection.created</code>, <code>vector.collection.dropped</code>, <code>vector.replica.assigned</code>, <code>vector.replica.lost</code>, <code>vector.heal.started</code>, <code>vector.heal.completed</code>. Each carries a monotonic <code>sequence</code>, an <code>atUtc</code> timestamp, the <code>collection</code>, and a <code>data</code> blob (holder connection id, node id, reason, before/after counts).</li>
+              <li><strong>Console — Collections panel.</strong> Record count, replication factor (target vs current), replica placement per node, and a badge that flips to "under-replicated" when a collection drops below target. Each row has a Rebuild button that calls the admin rebuild endpoint.</li>
+              <li><strong>Console — Vector activity feed.</strong> Rolling live feed of the last 40 vector events (newest first) with per-kind colour cues. Updates over SSE with the polling fallback the console already had for node snapshots.</li>
+              <li><strong>Admin detail endpoint.</strong> <code>GET /api/admin/vector/collections/{collection}</code> returns collection info, placement, the <code>underReplicated</code> flag, and per-collection query stats (<code>queries</code>, <code>queryLatencyAvgMs</code>).</li>
+              <li><strong>Per-collection query stats.</strong> The metrics snapshot gains a <code>perCollection</code> array — query count and average latency in milliseconds — recorded on every <code>/query</code> and <code>/retrieve</code> call, regardless of whether the query was served hub-local or by a node replica.</li>
+              <li><strong>Build-free.</strong> Same dark-theme HTML/CSS/JS as v1.3, no framework, no toolchain. The vector event bus uses bounded queues with drop-oldest semantics so a slow subscriber can never back-pressure the write path.</li>
+            </ul>
+
             <h3>What's coming next</h3>
             <p>v1.5 is the foundation — the storage contract everything else stands on. Subsequent releases build on top of it:</p>
             <ul>
               <li><s><strong>v1.6.0</strong> — embeddings on the nodes (text-in upsert and query, drop-in <code>/api/embed</code>).</s> <em>shipped.</em></li>
               <li><s><strong>v1.7.0</strong> — replication across the fleet; node-served queries.</s> <em>shipped.</em></li>
               <li><s><strong>v1.8.0</strong> — self-healing when a node drops; rebuild from the raw store automatically.</s> <em>shipped.</em></li>
-              <li><strong>v1.9.0</strong> — console surface for collections, replica health, and live healing events.</li>
+              <li><s><strong>v1.9.0</strong> — console surface for collections, replica health, and live healing events.</s> <em>shipped.</em></li>
               <li><strong>v2.0.0</strong> — retrieval wired straight into <code>/api/chat</code> and <code>/api/generate</code>: the "RAG mesh" milestone.</li>
             </ul>
           </section>
@@ -520,7 +548,7 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
 		============================ -->
           <section id="idocs_changelog">
             <h2>Roadmap &amp; status</h2>
-            <p>InferHub <strong>1.8</strong> makes the replicated vector layer self-healing: when a node holding a replica drops, the coordinator rebuilds it on a survivor from its raw store — back to the target replication factor, automatically. If every holder of a collection drops, the hub-local index keeps answering reads and the next eligible node is seeded from raw. This sits on top of v1.7's replication push-protocol, v1.6's text-in/vectors-out loop, the v1.5 vector store, and the v1.4 base (Bearer auth, sticky + least-busy routing, live streaming, pre-stream failover, typed/validated node config, an admin API, and a live management console).</p>
+            <p>InferHub <strong>1.9</strong> puts the whole vector mesh on the console: collections, replica placement, and healing events land in the same build-free UI, and the admin SSE stream carries live vector lifecycle events alongside node snapshots. This sits on top of v1.8's self-healing replicas, v1.7's replication push-protocol, v1.6's text-in/vectors-out loop, the v1.5 vector store, and the v1.4 base (Bearer auth, sticky + least-busy routing, live streaming, pre-stream failover, typed/validated node config, an admin API, and a live management console).</p>
             <div class="table-responsive">
               <table class="table table-bordered">
                 <thead>
@@ -543,10 +571,11 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
                   <tr><td>14</td><td>Embeddings &amp; retrieval</td><td><code>v1.6.0</code></td></tr>
                   <tr><td>15</td><td>Replication across nodes</td><td><code>v1.7.0</code></td></tr>
                   <tr><td>16</td><td>Durability &amp; self-healing</td><td><code>v1.8.0</code></td></tr>
+                  <tr><td>17</td><td>Console &amp; observability</td><td><code>v1.9.0</code></td></tr>
                 </tbody>
               </table>
             </div>
-            <p><strong>What's next.</strong> Phases 17–18 finish the RAG mesh on top of v1.8's self-healing replicas: a console surface for collections, replica health and live healing events (<code>v1.9.0</code>), and finally inline retrieval on <code>/api/chat</code> and <code>/api/generate</code> for the <code>v2.0.0</code> GA. Beyond the vector track: multi-coordinator clustering, persisted affinity, richer audit trails, and additional inference backends (vLLM, llama.cpp) stay on the table.</p>
+            <p><strong>What's next.</strong> Phase 18 finishes the RAG mesh: inline retrieval on <code>/api/chat</code> and <code>/api/generate</code> via opt-in headers, with the hub orchestrating the pipeline (embed → search → prompt assembly) and the nodes doing the heavy compute — the <code>v2.0.0</code> GA milestone. Beyond the vector track: multi-coordinator clustering, persisted affinity, richer audit trails, and additional inference backends (vLLM, llama.cpp) stay on the table.</p>
             <p class="text-muted"><small>Made by <a href="https://devart.solutions" target="_blank">Dev Art Solutions</a>. We build production-ready AI and agent systems. Say hello: <a href="mailto:hello@devart.solutions">hello@devart.solutions</a></small></p>
           </section>
 
