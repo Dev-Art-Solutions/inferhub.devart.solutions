@@ -7,7 +7,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1.0, shrink-to-fit=no">
   <link href="assets/images/favicon.png" rel="icon" type="image/png" />
   <title>InferHub — self-hosted, Ollama-compatible inference mesh</title>
-  <meta name="description" content="InferHub is a self-hosted, Ollama-compatible inference mesh with a replicated vector store. Run the gateway on an always-on, GPU-less host; run worker nodes wherever the GPUs live — no port forwarding required.">
+  <meta name="description" content="InferHub is a self-hosted, Ollama-compatible inference mesh with a replicated vector store and inline retrieval-augmented inference. Run the gateway on an always-on, GPU-less host; run worker nodes wherever the GPUs live — no port forwarding required.">
   <meta name="author" content="Dev-Art-Solutions">
 
   <!-- Stylesheet
@@ -103,7 +103,11 @@
           </li>
           <li class="nav-item"><a class="nav-link" href="#idocs_status">Status &amp; observability</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_console">Management console</a></li>
-          <li class="nav-item"><a class="nav-link" href="#idocs_vector">Vector store</a></li>
+          <li class="nav-item"><a class="nav-link" href="#idocs_vector">Vector store</a>
+            <ul class="nav flex-column">
+              <li class="nav-item"><a class="nav-link" href="#idocs_rag">Retrieval-augmented inference</a></li>
+            </ul>
+          </li>
           <li class="nav-item"><a class="nav-link" href="#idocs_resilience">Resilience &amp; failover</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_conversations">Conversations &amp; routing</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_builtwith">Built with</a></li>
@@ -276,6 +280,7 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
                   <tr><td><code>VectorStore:Retrieval:DefaultK</code></td><td><code>4</code></td><td>Top-k injected when a request opts into retrieval (consumed by phase 18).</td></tr>
                   <tr><td><code>VectorStore:Retrieval:MaxRecords</code></td><td><code>8</code></td><td>Hard cap on injected records per retrieval request (must be ≥ DefaultK).</td></tr>
                   <tr><td><code>VectorStore:Retrieval:OnMissing</code></td><td><code>error</code></td><td><code>error</code> | <code>passthrough</code> when retrieval can't run (store disabled, unknown collection, no embedding node).</td></tr>
+                  <tr><td><code>VectorStore:Retrieval:Template</code></td><td><em>(built-in)</em></td><td><strong>v2.0+</strong> — prompt template applied when a request opts into retrieval; must contain the literal <code>{context}</code> placeholder. Default asks the model to answer from context and admit when it can't.</td></tr>
                 </tbody>
               </table>
             </div>
@@ -315,8 +320,8 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
             <p>A read-only status page lives at <code>/</code> (and <code>/status</code>). It auto-refreshes and shows the fleet — connected nodes, their reported models, live in-flight counts, eviction history, and failover stats.</p>
             <p><code>GET /api/status</code> returns the same data as JSON. From <strong>v1.9</strong>, it gains a <code>vector</code> block when the store is enabled — omitted otherwise, so consumers that ignored the field before see no change:</p>
             <pre><code class="json">{
-  "coordinatorVersion": "1.9.0",
-  "nowUtc": "2026-07-01T12:00:00+00:00",
+  "coordinatorVersion": "2.0.0",
+  "nowUtc": "2026-07-02T12:00:00+00:00",
   "uptimeSeconds": 4321.5,
   "nodes": [ { "nodeId": "...", "name": "...", "inFlight": 0, "localInFlight": 0, "modelCount": 4, "ageSeconds": 1.2 } ],
   "models": [ { "name": "llama3", "digest": "...", "size": 4661211808 } ],
@@ -386,7 +391,7 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
 		============================ -->
           <section id="idocs_vector">
             <h2>Vector store</h2>
-            <p class="lead">As of <strong>v1.5.0</strong> InferHub ships with a local, embedded vector store on the coordinator. <strong>v1.6.0</strong> closes the text loop. <strong>v1.7.0</strong> spreads each collection's index across the connected nodes and lets queries be served by a node, not just the coordinator. <strong>v1.8.0</strong> makes that placement self-healing — lose a holder and the index is rebuilt on a survivor from the raw store, automatically. <strong>v1.9.0</strong> puts all of it on the console: collections, replica health, and live healing events land in the same build-free UI over SSE.</p>
+            <p class="lead">As of <strong>v1.5.0</strong> InferHub ships with a local, embedded vector store on the coordinator. <strong>v1.6.0</strong> closes the text loop. <strong>v1.7.0</strong> spreads each collection's index across the connected nodes and lets queries be served by a node, not just the coordinator. <strong>v1.8.0</strong> makes that placement self-healing — lose a holder and the index is rebuilt on a survivor from the raw store, automatically. <strong>v1.9.0</strong> puts all of it on the console. <strong>v2.0.0</strong> wires retrieval straight into <code>/api/chat</code> and <code>/api/generate</code>: the RAG mesh, GA.</p>
             <p>Two layers, kept honest:</p>
             <ul>
               <li><strong>Raw store</strong> — an append-only log of vector ops on disk (plus a periodic compacted snapshot) under <code>VectorStore:DataDirectory</code>. Plain newline-delimited JSON, one folder per collection. Source of truth, copyable, backupable. <strong>Lives on the coordinator</strong>.</li>
@@ -481,15 +486,38 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
               <li><strong>Build-free.</strong> Same dark-theme HTML/CSS/JS as v1.3, no framework, no toolchain. The vector event bus uses bounded queues with drop-oldest semantics so a slow subscriber can never back-pressure the write path.</li>
             </ul>
 
-            <h3>What's coming next</h3>
-            <p>v1.5 is the foundation — the storage contract everything else stands on. Subsequent releases build on top of it:</p>
+            <h3 id="idocs_rag">Retrieval-augmented inference (v2.0+)</h3>
+            <p>v2.0 closes the RAG mesh: models can read from the store inline. A client opts a normal <code>/api/chat</code> or <code>/api/generate</code> call into retrieval by naming a collection; the coordinator embeds the query on a node, searches the store, injects the top matches as context, and dispatches the generation to a node. The Ollama-shaped body stays pure — retrieval is driven entirely by headers, and the retrieved source ids come back on a response header.</p>
+            <div class="table-responsive">
+              <table class="table table-bordered">
+                <thead>
+                  <tr><th>Header</th><th>Direction</th><th>Purpose</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td><code>X-InferHub-Retrieve</code></td><td>request</td><td>Collection name. Presence enables RAG for this call.</td></tr>
+                  <tr><td><code>X-InferHub-Retrieve-K</code></td><td>request</td><td>Top-k override, clamped to <code>VectorStore:Retrieval:MaxRecords</code>.</td></tr>
+                  <tr><td><code>X-InferHub-Retrieve-Model</code></td><td>request</td><td>Embedding model override (defaults to <code>VectorStore:DefaultEmbeddingModel</code>).</td></tr>
+                  <tr><td><code>X-InferHub-Sources</code></td><td>response</td><td>JSON array of the retrieved record ids used to ground the answer.</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p>Example — a grounded chat call:</p>
+            <pre><code class="bash">curl http://your-coordinator:5080/api/chat \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "X-InferHub-Retrieve: docs" \
+  -H "X-InferHub-Retrieve-K: 4" \
+  -d '{"model":"llama3","messages":[{"role":"user","content":"What is InferHub?"}],"stream":false}'</code></pre>
             <ul>
-              <li><s><strong>v1.6.0</strong> — embeddings on the nodes (text-in upsert and query, drop-in <code>/api/embed</code>).</s> <em>shipped.</em></li>
-              <li><s><strong>v1.7.0</strong> — replication across the fleet; node-served queries.</s> <em>shipped.</em></li>
-              <li><s><strong>v1.8.0</strong> — self-healing when a node drops; rebuild from the raw store automatically.</s> <em>shipped.</em></li>
-              <li><s><strong>v1.9.0</strong> — console surface for collections, replica health, and live healing events.</s> <em>shipped.</em></li>
-              <li><strong>v2.0.0</strong> — retrieval wired straight into <code>/api/chat</code> and <code>/api/generate</code>: the "RAG mesh" milestone.</li>
+              <li><strong>Where the work happens.</strong> Only the search and the prompt assembly touch the hub. The embed job and the generation job are both dispatched to nodes over the existing SignalR link — no new machinery.</li>
+              <li><strong>Query text.</strong> For chat, the last user message; for generate, <code>prompt</code>. If neither yields content, the request is passed through unchanged (or errors, per <code>OnMissing</code>).</li>
+              <li><strong>Prompt assembly.</strong> Retrieved records are rendered as <code>[id] text</code> (drawn from <code>payload.text</code>, then <code>payload.content</code>, then the raw payload) and substituted into <code>VectorStore:Retrieval:Template</code> at the literal <code>{context}</code> placeholder. For chat the assembled context is inserted as a new <code>system</code> message after any operator-provided system messages; for generate it is prepended to <code>prompt</code>.</li>
+              <li><strong>Failover.</strong> When retrieval can't run — unknown collection, no embedding node, empty query text, store disabled — <code>VectorStore:Retrieval:OnMissing</code> picks the behaviour: <code>error</code> returns <code>424 Failed Dependency</code>; <code>passthrough</code> runs the original request unchanged and omits the sources header. Pre-stream failover on the generation job is unchanged.</li>
+              <li><strong>Rule preserved: no conversation content on the hub.</strong> The augmented request body is assembled in-flight and forwarded to the node — nothing about the message or the retrieved context is retained on the coordinator.</li>
+              <li><strong>Opt-in per request.</strong> A call without <code>X-InferHub-Retrieve</code> is byte-for-byte identical to v1.x — same routing, same streaming, same body.</li>
             </ul>
+
+            <h3>The RAG mesh in one paragraph</h3>
+            <p>Six phases, one arc. v1.5 laid the raw store; v1.6 closed the text loop by moving embeddings to the fleet; v1.7 replicated collections across nodes; v1.8 made that placement heal itself; v1.9 put it all on the console; v2.0 wires retrieval straight into inference. That's a local vector store the operator can back up as plain files, replicated across the GPU fleet, that heals itself when nodes come and go, and that the models themselves can read from — with a single header and zero external services.</p>
           </section>
 
           <hr class="divider">
@@ -548,7 +576,7 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
 		============================ -->
           <section id="idocs_changelog">
             <h2>Roadmap &amp; status</h2>
-            <p>InferHub <strong>1.9</strong> puts the whole vector mesh on the console: collections, replica placement, and healing events land in the same build-free UI, and the admin SSE stream carries live vector lifecycle events alongside node snapshots. This sits on top of v1.8's self-healing replicas, v1.7's replication push-protocol, v1.6's text-in/vectors-out loop, the v1.5 vector store, and the v1.4 base (Bearer auth, sticky + least-busy routing, live streaming, pre-stream failover, typed/validated node config, an admin API, and a live management console).</p>
+            <p>InferHub <strong>2.0</strong> closes the RAG mesh: models can read from the vector store inline. Add <code>X-InferHub-Retrieve: &lt;collection&gt;</code> to a normal <code>/api/chat</code> or <code>/api/generate</code> call and the coordinator embeds the query on a GPU node, searches the store (node replica if available, hub-local otherwise), assembles a grounded prompt, and dispatches the generation to a node. Retrieval is opt-in per request — without the header, calls are byte-for-byte identical to v1.x. This sits on top of v1.9's console surface, v1.8's self-healing replicas, v1.7's replication push-protocol, v1.6's text-in/vectors-out loop, the v1.5 vector store, and the v1.4 base (Bearer auth, sticky + least-busy routing, live streaming, pre-stream failover, typed/validated node config, an admin API, and a live management console).</p>
             <div class="table-responsive">
               <table class="table table-bordered">
                 <thead>
@@ -572,10 +600,11 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
                   <tr><td>15</td><td>Replication across nodes</td><td><code>v1.7.0</code></td></tr>
                   <tr><td>16</td><td>Durability &amp; self-healing</td><td><code>v1.8.0</code></td></tr>
                   <tr><td>17</td><td>Console &amp; observability</td><td><code>v1.9.0</code></td></tr>
+                  <tr><td>18</td><td>Retrieval-augmented inference</td><td><code>v2.0.0</code></td></tr>
                 </tbody>
               </table>
             </div>
-            <p><strong>What's next.</strong> Phase 18 finishes the RAG mesh: inline retrieval on <code>/api/chat</code> and <code>/api/generate</code> via opt-in headers, with the hub orchestrating the pipeline (embed → search → prompt assembly) and the nodes doing the heavy compute — the <code>v2.0.0</code> GA milestone. Beyond the vector track: multi-coordinator clustering, persisted affinity, richer audit trails, and additional inference backends (vLLM, llama.cpp) stay on the table.</p>
+            <p><strong>What's next.</strong> The vector / RAG mesh track (phases 13–18) is complete. Beyond the vector work: multi-coordinator clustering, persisted affinity, richer audit trails, and additional inference backends (vLLM, llama.cpp) stay on the table. Re-ranking, multi-collection fusion, query rewriting, and tool-calling-style retrieval are separate tracks — future work.</p>
             <p class="text-muted"><small>Made by <a href="https://devart.solutions" target="_blank">Dev Art Solutions</a>. We build production-ready AI and agent systems. Say hello: <a href="mailto:hello@devart.solutions">hello@devart.solutions</a></small></p>
           </section>
 
