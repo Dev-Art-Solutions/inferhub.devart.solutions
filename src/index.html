@@ -110,6 +110,7 @@
           </li>
           <li class="nav-item"><a class="nav-link" href="#idocs_resilience">Resilience &amp; failover</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_conversations">Conversations &amp; routing</a></li>
+          <li class="nav-item"><a class="nav-link" href="#idocs_csharp_client">C# client</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_builtwith">Built with</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_changelog">Roadmap &amp; status</a></li>
         </ul>
@@ -554,6 +555,59 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
   -H "X-InferHub-Conversation: my-chat-7f3a" \
   -d '{"model":"llama3","messages":[...],"stream":false}'</code></pre>
             <p>The header value is opaque — any stable string identifying the conversation works.</p>
+          </section>
+
+          <hr class="divider">
+
+          <!-- C# client
+		============================ -->
+          <section id="idocs_csharp_client">
+            <h2>C# client</h2>
+            <p class="lead"><strong>InferHub.Client</strong> is a small, typed .NET client for the InferHub coordinator. Point it at a coordinator, pass a Bearer token, and call chat, generate, and the model list from C# with typed requests and dependency injection.</p>
+            <p>
+              <a href="https://www.nuget.org/packages/InferHub.Client/" target="_blank">
+                <img src="https://img.shields.io/nuget/v/InferHub.Client.svg" alt="NuGet version" />
+              </a>
+              &nbsp;
+              <a href="https://github.com/Dev-Art-Solutions/InferHub.Client" target="_blank">
+                <img src="https://img.shields.io/badge/GitHub-InferHub.Client-24292f.svg" alt="GitHub: InferHub.Client" />
+              </a>
+              &nbsp;
+              <a href="https://github.com/Dev-Art-Solutions/InferHub.Client/blob/main/LICENSE" target="_blank">
+                <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" />
+              </a>
+            </p>
+            <p>Targets <code>net9.0</code> and <code>net10.0</code>. Serialization is <code>System.Text.Json</code>; the only runtime dependencies are <code>Microsoft.Extensions.Http</code> and the DI abstractions.</p>
+            <pre><code class="bash">dotnet add package InferHub.Client</code></pre>
+            <p>Wire it into a service collection and talk to the coordinator:</p>
+            <pre><code class="csharp">using InferHub.Client;
+using InferHub.Client.Extensions;
+using InferHub.Client.Models.Ollama;
+using Microsoft.Extensions.DependencyInjection;
+
+var services = new ServiceCollection();
+services.AddInferHubClient(o =&gt;
+{
+    o.BaseAddress = new Uri("http://localhost:5080");
+    o.ApiKey = "sk-client-token-1";
+});
+
+var provider = services.BuildServiceProvider();
+var client = provider.GetRequiredService&lt;IInferHubClient&gt;();
+
+var chat = await client.ChatAsync(new ChatRequest
+{
+    Model = "llama3",
+    Messages = new[]
+    {
+        new ChatMessage { Role = "user", Content = "Say hi in one word." }
+    }
+});
+
+Console.WriteLine(chat.Message?.Content);</code></pre>
+            <p><strong>What v0.1.0 covers.</strong> Blocking <code>ChatAsync</code> and <code>GenerateAsync</code>, <code>ListModelsAsync</code> (<code>/api/tags</code>), <code>GetStatusAsync</code>, and a cheap <code>PingAsync</code> against <code>/health</code>. Request models carry a <code>[JsonExtensionData]</code> bag, so anything the Ollama contract accepts &mdash; <code>options</code>, tool definitions, <code>format</code>, <code>keep_alive</code> &mdash; passes through untouched. Non-success responses surface as <code>InferHubException</code> with the coordinator's <code>{ "error": &hellip; }</code> body and the HTTP status.</p>
+            <p><strong>What is next.</strong> Streaming (<code>IAsyncEnumerable</code> over the NDJSON contract), embeddings (batch + legacy shapes), the full vector data-plane, opt-in RAG via <code>RetrievalOptions</code>, and a separate admin client for fleet + collection lifecycle &mdash; each in its own release. The public surface added in v0.1.0 stays stable as later phases layer on top.</p>
+            <p>Repository: <a href="https://github.com/Dev-Art-Solutions/InferHub.Client" target="_blank">github.com/Dev-Art-Solutions/InferHub.Client</a> &middot; Package: <a href="https://www.nuget.org/packages/InferHub.Client/" target="_blank">nuget.org/packages/InferHub.Client</a></p>
           </section>
 
           <hr class="divider">
