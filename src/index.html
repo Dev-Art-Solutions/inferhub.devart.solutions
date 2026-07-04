@@ -605,8 +605,17 @@ var chat = await client.ChatAsync(new ChatRequest
 });
 
 Console.WriteLine(chat.Message?.Content);</code></pre>
-            <p><strong>What v0.1.0 covers.</strong> Blocking <code>ChatAsync</code> and <code>GenerateAsync</code>, <code>ListModelsAsync</code> (<code>/api/tags</code>), <code>GetStatusAsync</code>, and a cheap <code>PingAsync</code> against <code>/health</code>. Request models carry a <code>[JsonExtensionData]</code> bag, so anything the Ollama contract accepts &mdash; <code>options</code>, tool definitions, <code>format</code>, <code>keep_alive</code> &mdash; passes through untouched. Non-success responses surface as <code>InferHubException</code> with the coordinator's <code>{ "error": &hellip; }</code> body and the HTTP status.</p>
-            <p><strong>What is next.</strong> Streaming (<code>IAsyncEnumerable</code> over the NDJSON contract), embeddings (batch + legacy shapes), the full vector data-plane, opt-in RAG via <code>RetrievalOptions</code>, and a separate admin client for fleet + collection lifecycle &mdash; each in its own release. The public surface added in v0.1.0 stays stable as later phases layer on top.</p>
+            <p><strong>Streaming (v0.2.0).</strong> <code>ChatStreamAsync</code> and <code>GenerateStreamAsync</code> return <code>IAsyncEnumerable&lt;&hellip;&gt;</code> over the coordinator's NDJSON contract &mdash; one JSON object per line, stopping at the chunk with <code>done:true</code>. A terminal error chunk (<code>{ "error": &hellip;, "done": true }</code>) is surfaced as an <code>InferHubException</code>, so a partial answer plus a clean exception is the contract and the enumerator never hangs. Cancelling the token throws promptly out of the <code>await foreach</code>.</p>
+            <pre><code class="csharp">await foreach (var chunk in client.ChatStreamAsync(new ChatRequest
+{
+    Model = "llama3",
+    Messages = new[] { new ChatMessage { Role = "user", Content = "Stream me a haiku." } }
+}, cancellationToken))
+{
+    Console.Write(chunk.Message?.Content);
+}</code></pre>
+            <p><strong>What v0.2.0 covers.</strong> Blocking + streaming <code>ChatAsync</code>/<code>ChatStreamAsync</code> and <code>GenerateAsync</code>/<code>GenerateStreamAsync</code>, <code>ListModelsAsync</code> (<code>/api/tags</code>), <code>GetStatusAsync</code>, and a cheap <code>PingAsync</code> against <code>/health</code>. Request models carry a <code>[JsonExtensionData]</code> bag, so anything the Ollama contract accepts &mdash; <code>options</code>, tool definitions, <code>format</code>, <code>keep_alive</code> &mdash; passes through untouched. Non-success responses surface as <code>InferHubException</code> with the coordinator's <code>{ "error": &hellip; }</code> body and the HTTP status.</p>
+            <p><strong>What is next.</strong> Embeddings (batch + legacy shapes), the full vector data-plane, opt-in RAG via <code>RetrievalOptions</code>, and a separate admin client for fleet + collection lifecycle &mdash; each in its own release. The public surface added in v0.1.0 stays stable as later phases layer on top.</p>
             <p>Repository: <a href="https://github.com/Dev-Art-Solutions/InferHub.Client" target="_blank">github.com/Dev-Art-Solutions/InferHub.Client</a> &middot; Package: <a href="https://www.nuget.org/packages/InferHub.Client/" target="_blank">nuget.org/packages/InferHub.Client</a></p>
           </section>
 
