@@ -101,6 +101,7 @@
               <li class="nav-item"><a class="nav-link" href="#idocs_config_node">Node</a></li>
             </ul>
           </li>
+          <li class="nav-item"><a class="nav-link" href="#idocs_windows_service">Windows service</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_status">Status &amp; observability</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_console">Management console</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_vector">Vector store</a>
@@ -300,6 +301,7 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
                   <tr><td><code>Coordinator:ModelRefreshInterval</code></td><td><code>00:01:00</code></td><td>How often the node re-reports its model list.</td></tr>
                   <tr><td><code>Coordinator:RetryDelay</code></td><td><code>00:00:05</code></td><td>Wait between reconnect attempts.</td></tr>
                   <tr><td><code>Node:Name</code></td><td><em>(machine name)</em></td><td>Friendly node name shown in the status page.</td></tr>
+                  <tr><td><code>Node:DataDirectory</code></td><td><code>null</code></td><td><strong>v2.1+</strong> — directory for writable node state (the <code>.inferhub-node-id</code> file). <code>null</code> = next to the executable. Set to e.g. <code>C:\ProgramData\InferHub\Node</code> when running as a Windows service under a least-privilege account.</td></tr>
                   <tr><td><code>Node:MaxConcurrency</code></td><td><code>null</code></td><td>Advisory in-flight cap reported to the coordinator (null = unbounded).</td></tr>
                   <tr><td><code>Node:Labels</code></td><td><code>{}</code></td><td>Free-form key/value pairs surfaced on <code>GET /api/nodes</code>.</td></tr>
                   <tr><td><code>Node:Models:Include</code></td><td><code>[]</code></td><td>Whitelist of model names to advertise (empty = all).</td></tr>
@@ -309,6 +311,32 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
                   <tr><td><code>Vector:ReplicaDirectory</code></td><td><code>./data/vector-replicas</code></td><td><strong>v1.7+</strong> — where the node persists assigned vector replicas. Loaded at startup so a restart doesn't trigger a full re-push.</td></tr>
                 </tbody>
               </table>
+            </div>
+          </section>
+
+          <hr class="divider">
+
+          <!-- Windows service
+		============================ -->
+          <section id="idocs_windows_service">
+            <h2>Running a node as a Windows service</h2>
+            <p class="lead">Auto-start on boot, restart-on-failure, Event Viewer logging — one PowerShell install script.</p>
+            <p>For an always-on GPU box, run the node as a native Windows service instead of a console process. The service host (<code>src/InferHub.Node.WindowsService</code>) is a thin wrapper that composes the exact same node services through a shared <code>AddInferHubNode</code> root, so it behaves identically to <code>dotnet run --project src/InferHub.Node</code> — only the packaging differs. The dev/console and Linux paths are unchanged.</p>
+
+            <p>Publish a self-contained single-file host (no .NET runtime needed on the box):</p>
+            <pre><code class="bash">dotnet publish src/InferHub.Node.WindowsService -c Release -r win-x64</code></pre>
+
+            <p>Copy the output to <code>C:\Program Files\InferHub\Node</code>, set <code>Coordinator:Url</code> in <code>appsettings.json</code>, and set the enrollment secret as a machine environment variable (never commit it):</p>
+            <pre><code class="powershell">[Environment]::SetEnvironmentVariable('Coordinator__EnrollmentSecret','shared-node-secret','Machine')</code></pre>
+
+            <p>Then install and start the service (run elevated):</p>
+            <pre><code class="powershell">./deploy/windows/install-service.ps1 `
+  -BinaryPath "C:\Program Files\InferHub\Node\InferHub.Node.Service.exe" -DelayedStart</code></pre>
+
+            <p>The install script configures automatic (or delayed-auto) start so the network and Ollama come up first, sets restart-on-failure recovery, and grants the service account write access to a writable data directory (<code>Node:DataDirectory</code>, default <code>C:\ProgramData\InferHub\Node</code>) so the node identity file survives under a least-privilege account. It logs to the Windows Event Log by default — check <em>Event Viewer → Windows Logs → Application</em>. The full runbook, including update/uninstall and virtual-account setup, lives in <a href="https://github.com/Dev-Art-Solutions/InferHub/blob/main/deploy/windows/README.md" target="_blank">deploy/windows/README.md</a>; a prebuilt win-x64 service + scripts are attached to the <a href="https://github.com/Dev-Art-Solutions/InferHub/releases/tag/v2.1.0" target="_blank">v2.1.0 release</a>.</p>
+
+            <div class="alert alert-info" role="alert">
+              <strong>Linux?</strong> The equivalent is the same host pattern with <code>builder.Services.AddSystemd()</code> and a <code>.service</code> unit file — same composition root, different lifetime integration.
             </div>
           </section>
 
@@ -687,7 +715,7 @@ var doc = record.Payload.As(MyJsonContext.Default.Doc);</code></pre>
 		============================ -->
           <section id="idocs_changelog">
             <h2>Roadmap &amp; status</h2>
-            <p>InferHub <strong>2.0</strong> closes the RAG mesh: models can read from the vector store inline. Add <code>X-InferHub-Retrieve: &lt;collection&gt;</code> to a normal <code>/api/chat</code> or <code>/api/generate</code> call and the coordinator embeds the query on a GPU node, searches the store (node replica if available, hub-local otherwise), assembles a grounded prompt, and dispatches the generation to a node. Retrieval is opt-in per request — without the header, calls are byte-for-byte identical to v1.x. This sits on top of v1.9's console surface, v1.8's self-healing replicas, v1.7's replication push-protocol, v1.6's text-in/vectors-out loop, the v1.5 vector store, and the v1.4 base (Bearer auth, sticky + least-busy routing, live streaming, pre-stream failover, typed/validated node config, an admin API, and a live management console).</p>
+            <p>InferHub <strong>2.0</strong> closes the RAG mesh: models can read from the vector store inline. Add <code>X-InferHub-Retrieve: &lt;collection&gt;</code> to a normal <code>/api/chat</code> or <code>/api/generate</code> call and the coordinator embeds the query on a GPU node, searches the store (node replica if available, hub-local otherwise), assembles a grounded prompt, and dispatches the generation to a node. Retrieval is opt-in per request — without the header, calls are byte-for-byte identical to v1.x. This sits on top of v1.9's console surface, v1.8's self-healing replicas, v1.7's replication push-protocol, v1.6's text-in/vectors-out loop, the v1.5 vector store, and the v1.4 base (Bearer auth, sticky + least-busy routing, live streaming, pre-stream failover, typed/validated node config, an admin API, and a live management console). On the deployment side, <strong>2.1</strong> adds a first-class way to run a node as a native Windows service without changing the cross-platform worker.</p>
             <div class="table-responsive">
               <table class="table table-bordered">
                 <thead>
@@ -712,6 +740,7 @@ var doc = record.Payload.As(MyJsonContext.Default.Doc);</code></pre>
                   <tr><td>16</td><td>Durability &amp; self-healing</td><td><code>v1.8.0</code></td></tr>
                   <tr><td>17</td><td>Console &amp; observability</td><td><code>v1.9.0</code></td></tr>
                   <tr><td>18</td><td>Retrieval-augmented inference</td><td><code>v2.0.0</code></td></tr>
+                  <tr><td>—</td><td>Windows-service deployment <span class="text-muted">(deployment addition, not a RAG phase)</span></td><td><code>v2.1.0</code></td></tr>
                 </tbody>
               </table>
             </div>
