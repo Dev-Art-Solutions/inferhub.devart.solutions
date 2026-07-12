@@ -7,7 +7,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1.0, shrink-to-fit=no">
   <link href="assets/images/favicon.png" rel="icon" type="image/png" />
   <title>InferHub — self-hosted, Ollama-compatible inference mesh</title>
-  <meta name="description" content="InferHub is a self-hosted, Ollama-compatible inference mesh with a replicated vector store and inline retrieval-augmented inference. Run the gateway on an always-on, GPU-less host; run worker nodes wherever the GPUs live — no port forwarding required.">
+  <meta name="description" content="InferHub is a self-hosted, Ollama-compatible inference mesh with a pluggable vector store (local or PostgreSQL/pgvector) and inline retrieval-augmented inference. Run the gateway on an always-on, GPU-less host; run worker nodes wherever the GPUs live — no port forwarding required.">
   <meta name="author" content="Dev-Art-Solutions">
 
   <!-- Stylesheet
@@ -106,6 +106,7 @@
           <li class="nav-item"><a class="nav-link" href="#idocs_console">Management console</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_vector">Vector store</a>
             <ul class="nav flex-column">
+              <li class="nav-item"><a class="nav-link" href="#idocs_vector_postgres">PostgreSQL + pgvector</a></li>
               <li class="nav-item"><a class="nav-link" href="#idocs_rag">Retrieval-augmented inference</a></li>
             </ul>
           </li>
@@ -271,8 +272,9 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
                   <tr><td><code>Auth:AdminApiKeys</code></td><td><code>[]</code></td><td>Accepted admin Bearer tokens guarding <code>/api/admin/*</code>. Separate from <code>ApiKeys</code>.</td></tr>
                   <tr><td><code>Auth:RequireAuthForLoopback</code></td><td><code>false</code></td><td>Force loopback callers to present a token too (applies to client and admin scopes).</td></tr>
                   <tr><td><code>Auth:NodeEnrollmentSecret</code></td><td><em>(empty)</em></td><td>Shared secret nodes present when joining the hub. Empty disables enrollment.</td></tr>
-                  <tr><td><code>VectorStore:Enabled</code></td><td><code>false</code></td><td>Master switch for the embedded vector store (phase 13+). Off = no persisted state, original v1.4 contract.</td></tr>
-                  <tr><td><code>VectorStore:DataDirectory</code></td><td><code>./data/vectors</code></td><td>Where the raw store + snapshots live on the coordinator.</td></tr>
+                  <tr><td><code>VectorStore:Enabled</code></td><td><code>false</code></td><td>Master switch for the vector store (phase 13+). Off = no persisted state, original v1.4 contract.</td></tr>
+                  <tr><td><code>VectorStore:Provider</code></td><td><code>local</code></td><td><strong>v2.2+</strong> — storage backend: <code>local</code> (file-backed, replicated) | <code>postgres</code> (external pgvector).</td></tr>
+                  <tr><td><code>VectorStore:DataDirectory</code></td><td><code>./data/vectors</code></td><td>Where the raw store + snapshots live on the coordinator. Local provider only.</td></tr>
                   <tr><td><code>VectorStore:Distance</code></td><td><code>cosine</code></td><td>Default similarity metric (<code>cosine</code> | <code>dot</code> | <code>l2</code>).</td></tr>
                   <tr><td><code>VectorStore:SnapshotEveryOps</code></td><td><code>5000</code></td><td>Ops appended before a compacted snapshot is written and the ops tail is truncated.</td></tr>
                   <tr><td><code>VectorStore:ReplicationFactor</code></td><td><code>2</code></td><td>Target node replicas per collection (used by phase 15; capped at node count).</td></tr>
@@ -283,6 +285,17 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
                   <tr><td><code>VectorStore:Retrieval:MaxRecords</code></td><td><code>8</code></td><td>Hard cap on injected records per retrieval request (must be ≥ DefaultK).</td></tr>
                   <tr><td><code>VectorStore:Retrieval:OnMissing</code></td><td><code>error</code></td><td><code>error</code> | <code>passthrough</code> when retrieval can't run (store disabled, unknown collection, no embedding node).</td></tr>
                   <tr><td><code>VectorStore:Retrieval:Template</code></td><td><em>(built-in)</em></td><td><strong>v2.0+</strong> — prompt template applied when a request opts into retrieval; must contain the literal <code>{context}</code> placeholder. Default asks the model to answer from context and admit when it can't.</td></tr>
+                  <tr><td><code>VectorStore:Postgres:ConnectionString</code></td><td><em>(empty)</em></td><td><strong>v2.2+</strong> — Npgsql connection string. <strong>Required</strong> when <code>Provider=postgres</code>. Set via env (<code>VectorStore__Postgres__ConnectionString</code>) or user-secrets, never in <code>appsettings.json</code>.</td></tr>
+                  <tr><td><code>VectorStore:Postgres:Schema</code></td><td><code>inferhub</code></td><td><strong>v2.2+</strong> — schema holding the registry and per-collection tables (<code>^[a-z_][a-z0-9_]*$</code>).</td></tr>
+                  <tr><td><code>VectorStore:Postgres:TablePrefix</code></td><td><code>vec_</code></td><td><strong>v2.2+</strong> — prefix for per-collection tables (<code>^[a-z_][a-z0-9_]*$</code>).</td></tr>
+                  <tr><td><code>VectorStore:Postgres:AutoCreateExtension</code></td><td><code>true</code></td><td><strong>v2.2+</strong> — run <code>CREATE EXTENSION IF NOT EXISTS vector</code> at startup; set <code>false</code> if a DBA pre-installed it.</td></tr>
+                  <tr><td><code>VectorStore:Postgres:AutoCreateSchema</code></td><td><code>true</code></td><td><strong>v2.2+</strong> — run <code>CREATE SCHEMA IF NOT EXISTS</code> at startup.</td></tr>
+                  <tr><td><code>VectorStore:Postgres:Index</code></td><td><code>hnsw</code></td><td><strong>v2.2+</strong> — ANN index: <code>hnsw</code> | <code>ivfflat</code> | <code>none</code> (exact scan).</td></tr>
+                  <tr><td><code>VectorStore:Postgres:HnswM</code></td><td><code>16</code></td><td><strong>v2.2+</strong> — HNSW <code>m</code> build parameter (≥ 2).</td></tr>
+                  <tr><td><code>VectorStore:Postgres:HnswEfConstruction</code></td><td><code>64</code></td><td><strong>v2.2+</strong> — HNSW <code>ef_construction</code> build parameter (≥ HnswM).</td></tr>
+                  <tr><td><code>VectorStore:Postgres:EfSearch</code></td><td><code>40</code></td><td><strong>v2.2+</strong> — per-query <code>hnsw.ef_search</code> (higher = better recall, slower).</td></tr>
+                  <tr><td><code>VectorStore:Postgres:CommandTimeoutSeconds</code></td><td><code>30</code></td><td><strong>v2.2+</strong> — Npgsql command timeout.</td></tr>
+                  <tr><td><code>VectorStore:Postgres:MaxPoolSize</code></td><td><code>20</code></td><td><strong>v2.2+</strong> — max pool size, applied if the connection string doesn't set one.</td></tr>
                 </tbody>
               </table>
             </div>
@@ -420,8 +433,8 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
 		============================ -->
           <section id="idocs_vector">
             <h2>Vector store</h2>
-            <p class="lead">As of <strong>v1.5.0</strong> InferHub ships with a local, embedded vector store on the coordinator. <strong>v1.6.0</strong> closes the text loop. <strong>v1.7.0</strong> spreads each collection's index across the connected nodes and lets queries be served by a node, not just the coordinator. <strong>v1.8.0</strong> makes that placement self-healing — lose a holder and the index is rebuilt on a survivor from the raw store, automatically. <strong>v1.9.0</strong> puts all of it on the console. <strong>v2.0.0</strong> wires retrieval straight into <code>/api/chat</code> and <code>/api/generate</code>: the RAG mesh, GA.</p>
-            <p>Two layers, kept honest:</p>
+            <p class="lead">InferHub's vector store is <strong>provider-backed</strong>: <code>VectorStore:Provider</code> selects <code>local</code> (default) or, as of <strong>v2.2.0</strong>, <code>postgres</code> (external <a href="https://github.com/pgvector/pgvector">PostgreSQL + pgvector</a>). Every endpoint, header, and client call is identical across providers — only the storage engine changes, and embeddings and inline retrieval always run on the fleet.</p>
+            <p>The <strong>local</strong> provider (since <strong>v1.5.0</strong>) is embedded on the coordinator. <strong>v1.6.0</strong> closes the text loop. <strong>v1.7.0</strong> spreads each collection's index across the connected nodes and lets queries be served by a node, not just the coordinator. <strong>v1.8.0</strong> makes that placement self-healing — lose a holder and the index is rebuilt on a survivor from the raw store, automatically. <strong>v1.9.0</strong> puts all of it on the console. <strong>v2.0.0</strong> wires retrieval straight into <code>/api/chat</code> and <code>/api/generate</code>: the RAG mesh, GA. The local provider has two layers, kept honest:</p>
             <ul>
               <li><strong>Raw store</strong> — an append-only log of vector ops on disk (plus a periodic compacted snapshot) under <code>VectorStore:DataDirectory</code>. Plain newline-delimited JSON, one folder per collection. Source of truth, copyable, backupable. <strong>Lives on the coordinator</strong>.</li>
               <li><strong>Index</strong> — a flat (exact) cosine/dot/L2 structure in memory, rebuilt from the raw store at boot. Disposable. The coordinator always keeps a hub-local copy; from v1.7 it is also replicated to nodes.</li>
@@ -440,7 +453,7 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
                   <tr><td><code>GET</code></td><td><code>/api/admin/vector/collections/{collection}</code></td><td>Admin</td><td><strong>v1.9+</strong> — per-collection detail: collection info, placement, <code>underReplicated</code> flag, and query stats (<code>queries</code>, <code>queryLatencyAvgMs</code>).</td></tr>
                   <tr><td><code>POST</code></td><td><code>/api/admin/vector/collections</code></td><td>Admin</td><td>Create a collection: <code>{ "name", "dimension", "distance" }</code>.</td></tr>
                   <tr><td><code>DELETE</code></td><td><code>/api/admin/vector/collections/{collection}</code></td><td>Admin</td><td>Drop a collection and remove its raw files.</td></tr>
-                  <tr><td><code>POST</code></td><td><code>/api/admin/vector/collections/{collection}/rebuild</code></td><td>Admin</td><td><strong>v1.8+</strong> — force a heal-to-target re-push from the raw store. Audit-logged as <code>vector.rebuild</code>.</td></tr>
+                  <tr><td><code>POST</code></td><td><code>/api/admin/vector/collections/{collection}/rebuild</code></td><td>Admin</td><td><strong>v1.8+</strong> — force a heal-to-target re-push from the raw store. Audit-logged as <code>vector.rebuild</code>. Returns <code>409</code> under the <code>postgres</code> provider (nothing to re-push).</td></tr>
                   <tr><td><code>POST</code></td><td><code>/api/vector/{collection}/upsert</code></td><td>Client</td><td>Insert or replace a record by id: <code>{ "id", "vector", "payload"?, "metadata"? }</code>.</td></tr>
                   <tr><td><code>POST</code></td><td><code>/api/vector/{collection}/query</code></td><td>Client</td><td>Nearest-neighbour search: <code>{ "vector", "k", "filter"? }</code> → ranked matches.</td></tr>
                   <tr><td><code>GET</code></td><td><code>/api/vector/{collection}/{id}</code></td><td>Client</td><td>Fetch a single record by id.</td></tr>
@@ -514,6 +527,54 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
               <li><strong>Per-collection query stats.</strong> The metrics snapshot gains a <code>perCollection</code> array — query count and average latency in milliseconds — recorded on every <code>/query</code> and <code>/retrieve</code> call, regardless of whether the query was served hub-local or by a node replica.</li>
               <li><strong>Build-free.</strong> Same dark-theme HTML/CSS/JS as v1.3, no framework, no toolchain. The vector event bus uses bounded queues with drop-oldest semantics so a slow subscriber can never back-pressure the write path.</li>
             </ul>
+
+            <h3 id="idocs_vector_postgres">PostgreSQL + pgvector (v2.2+)</h3>
+            <p>Set <code>VectorStore:Provider</code> to <code>postgres</code> and point the coordinator at a PostgreSQL that has the <a href="https://github.com/pgvector/pgvector">pgvector</a> extension. You get HNSW-indexed ANN search, real transactions, ordinary database backups, and other apps reading the same table — with every endpoint, header, and client call unchanged. <strong>Pick it</strong> when you already run Postgres, want ANN + transactions + backups you understand, or the dataset has outgrown flat-exact search. <strong>Stay local</strong> when you want zero external services, plain-file backups, and search replicas living on the GPU fleet.</p>
+            <p>The <code>IVectorStore</code> seam was designed for exactly this since v1.5 — the postgres provider is the second implementation behind it, proving the swap is real rather than promised.</p>
+
+            <h4>Schema</h4>
+            <p>One registry table plus one table per collection (pgvector's <code>vector(N)</code> column is dimension-typed, so table-per-collection is the natural mapping). An ANN index is built per the collection's distance metric, and a GIN index backs metadata filters.</p>
+            <pre><code class="sql">CREATE TABLE inferhub.collections (
+    name text PRIMARY KEY, dimension integer NOT NULL,
+    distance text NOT NULL, created_at timestamptz NOT NULL DEFAULT now());
+
+CREATE TABLE inferhub.vec_docs (
+    id text PRIMARY KEY, embedding vector(768) NOT NULL,
+    payload jsonb, metadata jsonb,
+    seq_no bigint NOT NULL, updated_at timestamptz NOT NULL DEFAULT now());
+CREATE INDEX ON inferhub.vec_docs USING hnsw (embedding vector_cosine_ops)
+    WITH (m = 16, ef_construction = 64);
+CREATE INDEX ON inferhub.vec_docs USING gin (metadata);</code></pre>
+            <p>Score sign-conventions match the local provider exactly, so clients see identical rankings and numbers: <code>cosine</code> → <code>1 - (embedding &lt;=&gt; $q)</code> (higher is better), <code>dot</code> → <code>-(embedding &lt;#&gt; $q)</code> (higher is better), <code>l2</code> → <code>embedding &lt;-&gt; $q</code> (lower is better). A cross-provider parity test pins identical ordering and scores within 1e-4 for all three metrics.</p>
+
+            <h4>Honest trade-offs</h4>
+            <p>Postgres is itself a durable, concurrently-queryable source of truth, so under this provider the coordinator holds no vector state on disk and does <strong>not</strong> replicate an index onto the fleet — two sources of truth would be a bug. Concretely:</p>
+            <ul>
+              <li><strong>No node replication, no self-healing, no node-served vector reads</strong> — search runs in Postgres; the replica/placement columns are zeroed and the <code>vectorReplicasHealed</code> / <code>vectorRebuildsFromRaw</code> / <code>vectorUnderReplicated</code> metrics stay flat.</li>
+              <li>The <strong>rebuild</strong> admin endpoint returns <code>409</code> (nothing to re-push), and the console disables its Rebuild button.</li>
+              <li>The status <code>vector</code> block carries a <code>provider</code> tag; the console shows a provider badge.</li>
+              <li>pgvector's ANN index tops out at <strong>2000 dimensions</strong> — above that a collection still works but falls back to exact scan (logged at creation), never a silently broken index.</li>
+              <li><strong>No migration path between providers yet</strong> — switching on a populated deployment means re-ingesting.</li>
+            </ul>
+            <p>The mesh stays intact: <strong>embeddings and inline retrieval still run on the GPU nodes</strong>. Only the storage engine changed.</p>
+
+            <h4>Walk-through</h4>
+            <p>Bring up a Postgres with pgvector, point the coordinator at it (via env, never <code>appsettings.json</code>), and use the same API as ever:</p>
+            <pre><code class="bash">docker compose -f deploy/postgres/docker-compose.yml up -d
+
+export VectorStore__Enabled=true
+export VectorStore__Provider=postgres
+export VectorStore__Postgres__ConnectionString="Host=localhost;Database=inferhub;Username=inferhub;Password=inferhub"
+dotnet run --project src/InferHub.Coordinator</code></pre>
+            <pre><code class="bash">curl -X POST http://localhost:5080/api/admin/vector/collections \
+  -H "Authorization: Bearer YOUR_ADMIN_KEY" \
+  -d '{"name":"docs","dimension":3,"distance":"cosine"}'
+curl -X POST http://localhost:5080/api/vector/docs/upsert \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -d '{"id":"a","vector":[1,0,0],"metadata":{"lang":"en"}}'
+curl -X POST http://localhost:5080/api/vector/docs/query \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -d '{"vector":[1,0,0],"k":3}'</code></pre>
 
             <h3 id="idocs_rag">Retrieval-augmented inference (v2.0+)</h3>
             <p>v2.0 closes the RAG mesh: models can read from the store inline. A client opts a normal <code>/api/chat</code> or <code>/api/generate</code> call into retrieval by naming a collection; the coordinator embeds the query on a node, searches the store, injects the top matches as context, and dispatches the generation to a node. The Ollama-shaped body stays pure — retrieval is driven entirely by headers, and the retrieved source ids come back on a response header.</p>
@@ -715,7 +776,7 @@ var doc = record.Payload.As(MyJsonContext.Default.Doc);</code></pre>
 		============================ -->
           <section id="idocs_changelog">
             <h2>Roadmap &amp; status</h2>
-            <p>InferHub <strong>2.0</strong> closes the RAG mesh: models can read from the vector store inline. Add <code>X-InferHub-Retrieve: &lt;collection&gt;</code> to a normal <code>/api/chat</code> or <code>/api/generate</code> call and the coordinator embeds the query on a GPU node, searches the store (node replica if available, hub-local otherwise), assembles a grounded prompt, and dispatches the generation to a node. Retrieval is opt-in per request — without the header, calls are byte-for-byte identical to v1.x. This sits on top of v1.9's console surface, v1.8's self-healing replicas, v1.7's replication push-protocol, v1.6's text-in/vectors-out loop, the v1.5 vector store, and the v1.4 base (Bearer auth, sticky + least-busy routing, live streaming, pre-stream failover, typed/validated node config, an admin API, and a live management console). On the deployment side, <strong>2.1</strong> adds a first-class way to run a node as a native Windows service without changing the cross-platform worker.</p>
+            <p>InferHub <strong>2.0</strong> closes the RAG mesh: models can read from the vector store inline. Add <code>X-InferHub-Retrieve: &lt;collection&gt;</code> to a normal <code>/api/chat</code> or <code>/api/generate</code> call and the coordinator embeds the query on a GPU node, searches the store (node replica if available, hub-local otherwise), assembles a grounded prompt, and dispatches the generation to a node. Retrieval is opt-in per request — without the header, calls are byte-for-byte identical to v1.x. This sits on top of v1.9's console surface, v1.8's self-healing replicas, v1.7's replication push-protocol, v1.6's text-in/vectors-out loop, the v1.5 vector store, and the v1.4 base (Bearer auth, sticky + least-busy routing, live streaming, pre-stream failover, typed/validated node config, an admin API, and a live management console). On the deployment side, <strong>2.1</strong> adds a first-class way to run a node as a native Windows service without changing the cross-platform worker. <strong>2.2</strong> makes the vector store pluggable and ships the first alternative backend — <strong>PostgreSQL + pgvector</strong> — proving the <code>IVectorStore</code> seam with a second implementation.</p>
             <div class="table-responsive">
               <table class="table table-bordered">
                 <thead>
@@ -741,10 +802,11 @@ var doc = record.Payload.As(MyJsonContext.Default.Doc);</code></pre>
                   <tr><td>17</td><td>Console &amp; observability</td><td><code>v1.9.0</code></td></tr>
                   <tr><td>18</td><td>Retrieval-augmented inference</td><td><code>v2.0.0</code></td></tr>
                   <tr><td>—</td><td>Windows-service deployment <span class="text-muted">(deployment addition, not a RAG phase)</span></td><td><code>v2.1.0</code></td></tr>
+                  <tr><td>19</td><td>PostgreSQL + pgvector connector</td><td><code>v2.2.0</code></td></tr>
                 </tbody>
               </table>
             </div>
-            <p><strong>What's next.</strong> The vector / RAG mesh track (phases 13–18) is complete. Beyond the vector work: multi-coordinator clustering, persisted affinity, richer audit trails, and additional inference backends (vLLM, llama.cpp) stay on the table. Re-ranking, multi-collection fusion, query rewriting, and tool-calling-style retrieval are separate tracks — future work.</p>
+            <p><strong>What's next.</strong> With the <code>IVectorStore</code> seam now proven by a second implementation (phase 19), the next candidates are additional vector backends (Qdrant, SQL Server vector) and a migration command between providers. Beyond storage: multi-coordinator clustering, persisted affinity, richer audit trails, and additional inference backends (vLLM, llama.cpp) stay on the table. Re-ranking, multi-collection fusion, query rewriting, and tool-calling-style retrieval are separate tracks — future work.</p>
             <p class="text-muted"><small>Made by <a href="https://devart.solutions" target="_blank">Dev Art Solutions</a>. We build production-ready AI and agent systems. Say hello: <a href="mailto:hello@devart.solutions">hello@devart.solutions</a></small></p>
           </section>
 
