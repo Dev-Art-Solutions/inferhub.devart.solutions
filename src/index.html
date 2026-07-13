@@ -88,6 +88,7 @@
             </ul>
           </li>
           <li class="nav-item"><a class="nav-link" href="#idocs_quickstart">Quick Start</a></li>
+          <li class="nav-item"><a class="nav-link" href="#idocs_openai">OpenAI-compatible API</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_auth">Authentication</a>
             <ul class="nav flex-column">
               <li class="nav-item"><a class="nav-link" href="#idocs_tokens">Token sets</a></li>
@@ -102,6 +103,7 @@
             </ul>
           </li>
           <li class="nav-item"><a class="nav-link" href="#idocs_windows_service">Windows service</a></li>
+          <li class="nav-item"><a class="nav-link" href="#idocs_docker">Docker</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_status">Status &amp; observability</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_console">Management console</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_vector">Vector store</a>
@@ -185,7 +187,15 @@
 		============================ -->
           <section id="idocs_quickstart">
             <h2>Quick Start</h2>
-            <p class="lead">Two processes, then a single <code>curl</code>.</p>
+            <p class="lead">One command with Docker, or two processes from source.</p>
+
+            <h3>Docker</h3>
+            <p>Fill in three keys, then bring the stack up:</p>
+            <pre><code class="bash">cp deploy/docker/.env.example deploy/docker/.env   # set the three keys
+docker compose -f deploy/docker/docker-compose.yml up -d</code></pre>
+            <p>Images are published to GHCR for <code>linux/amd64</code> and <code>linux/arm64</code>. See <a href="#idocs_docker">Docker</a> for the full picture — including why the keys are mandatory there and optional below.</p>
+
+            <h3>From source</h3>
             <p>On the always-on host (no GPU needed) start the coordinator:</p>
             <pre><code class="bash">dotnet run --project src/InferHub.Coordinator</code></pre>
             <p>On each GPU machine (with Ollama already running locally on <code>:11434</code>) start a node:</p>
@@ -194,7 +204,66 @@
             <pre><code class="bash">curl http://your-coordinator:5080/api/chat \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -d '{"model":"llama3","messages":[{"role":"user","content":"Hello!"}],"stream":false}'</code></pre>
-            <p>That's it. The coordinator picks a node that holds <code>llama3</code>, runs the request there, and streams the response back.</p>
+            <p>That's it. The coordinator picks a node that holds <code>llama3</code>, runs the request there, and streams the response back. Prefer an OpenAI SDK? Point it at <code>/v1</code> instead — see below.</p>
+          </section>
+
+          <hr class="divider">
+
+          <!-- OpenAI-compatible API
+		============================ -->
+          <section id="idocs_openai">
+            <h2>OpenAI-compatible API</h2>
+            <p class="lead">Almost everything in this ecosystem speaks the OpenAI wire format, and exposes exactly one knob for pointing somewhere new: a base URL.</p>
+            <p>Since <code>v2.3.0</code> the coordinator serves an OpenAI-shaped surface at <code>/v1</code>, next to the Ollama endpoints it always had. Any OpenAI SDK, LangChain or LlamaIndex app, LiteLLM proxy, Continue/Cursor plugin, Open WebUI or n8n flow can talk to your own GPU mesh by changing one string.</p>
+
+            <div class="table-responsive">
+              <table class="table table-bordered">
+                <thead>
+                  <tr><th>Endpoint</th><th>Notes</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td><code>POST /v1/chat/completions</code></td><td>Blocking and SSE streaming.</td></tr>
+                  <tr><td><code>POST /v1/completions</code></td><td>Legacy text completion.</td></tr>
+                  <tr><td><code>POST /v1/embeddings</code></td><td><code>float</code> and <code>base64</code> encodings — the Python SDK requests base64 by default.</td></tr>
+                  <tr><td><code>GET /v1/models</code>, <code>GET /v1/models/{id}</code></td><td>The models your nodes advertise.</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <p>The API key is an ordinary InferHub client key (<code>Auth:ApiKeys</code>) — the same one the Ollama surface uses:</p>
+            <pre><code class="python">from openai import OpenAI
+
+client = OpenAI(base_url="http://your-coordinator:5080/v1", api_key="YOUR_API_KEY")
+
+stream = client.chat.completions.create(
+    model="llama3",
+    messages=[{"role": "user", "content": "Explain NAT traversal in two sentences."}],
+    stream=True,
+)
+for chunk in stream:
+    print(chunk.choices[0].delta.content or "", end="")</code></pre>
+
+            <p>Nothing about the mesh changed to make this work: the same least-busy router picks the node, the same sticky affinity keeps a conversation on the machine that already has the model warm, and the same pre-stream failover moves the job if that machine drops before the first token. The translation happens at the coordinator's front door — the nodes have no idea a second dialect exists.</p>
+
+            <h3>Retrieval, for free</h3>
+            <p>OpenAI clients let you set default headers, so a grounded answer over your own vector collection is a two-line change to an existing app rather than a new integration:</p>
+            <pre><code class="python">client = OpenAI(
+    base_url="http://your-coordinator:5080/v1",
+    api_key="YOUR_API_KEY",
+    default_headers={"X-InferHub-Retrieve": "my-collection"},
+)</code></pre>
+
+            <div class="alert alert-warning" role="alert">
+              <strong>Where the translation is lossy — stated, not papered over.</strong>
+              <ul class="mb-0">
+                <li><code>n &gt; 1</code> is <strong>rejected</strong> with a <code>400</code>, not quietly served once.</li>
+                <li>Tool calls are mapped in <strong>blocking mode only</strong>. Streaming <code>tool_calls</code> deltas are not implemented yet, and we would rather say so than fake them.</li>
+                <li><code>logprobs</code>, <code>logit_bias</code> and <code>user</code> are accepted and <strong>ignored</strong>.</li>
+                <li>Image and other multimodal content parts are <strong>rejected</strong>, not silently dropped — a model should never answer confidently about an image it was never sent.</li>
+              </ul>
+            </div>
+
+            <p>Errors on <code>/v1/*</code> use the OpenAI envelope (<code>{"error": {"message", "type", "param", "code"}}</code>), because an SDK reads <code>error.message</code> and would otherwise surface a useless "unknown error".</p>
           </section>
 
           <hr class="divider">
@@ -212,7 +281,7 @@
                   <tr><th>Token set</th><th>Used by</th><th>Coordinator config key</th></tr>
                 </thead>
                 <tbody>
-                  <tr><td>Client API keys</td><td>Inference callers (<code>/api/generate</code>, <code>/api/chat</code>, <code>/api/tags</code>)</td><td><code>Auth:ApiKeys</code></td></tr>
+                  <tr><td>Client API keys</td><td>Inference callers — both dialects: <code>/api/generate</code>, <code>/api/chat</code>, <code>/api/tags</code> and everything under <code>/v1</code></td><td><code>Auth:ApiKeys</code></td></tr>
                   <tr><td>Admin API keys</td><td>The management console &amp; <code>/api/admin/*</code> (cordon / drain / deregister)</td><td><code>Auth:AdminApiKeys</code></td></tr>
                   <tr><td>Node enrollment secret</td><td>Worker nodes joining the SignalR hub</td><td><code>Auth:NodeEnrollmentSecret</code></td></tr>
                 </tbody>
@@ -321,6 +390,7 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
                   <tr><td><code>Node:Models:Exclude</code></td><td><code>[]</code></td><td>Names dropped before reporting.</td></tr>
                   <tr><td><code>Backend:Type</code></td><td><code>ollama</code></td><td>Inference backend selector.</td></tr>
                   <tr><td><code>Ollama:Endpoint</code></td><td><code>http://localhost:11434/</code></td><td>Local Ollama URL (absolute http/https). Consumed via <a href="https://ollamaclient.devart.solutions" target="_blank">OllamaClient</a>.</td></tr>
+                  <tr><td><code>Ollama:RequestTimeout</code></td><td><code>00:05:00</code></td><td>Timeout for a single Ollama call. Matches the coordinator's <code>Dispatcher:TimeoutSeconds</code> so the node never gives up first; raise it for very large models whose cold load is slow.</td></tr>
                   <tr><td><code>Vector:ReplicaDirectory</code></td><td><code>./data/vector-replicas</code></td><td><strong>v1.7+</strong> — where the node persists assigned vector replicas. Loaded at startup so a restart doesn't trigger a full re-push.</td></tr>
                 </tbody>
               </table>
@@ -351,6 +421,39 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
             <div class="alert alert-info" role="alert">
               <strong>Linux?</strong> The equivalent is the same host pattern with <code>builder.Services.AddSystemd()</code> and a <code>.service</code> unit file — same composition root, different lifetime integration.
             </div>
+          </section>
+
+          <hr class="divider">
+
+          <!-- Docker
+		============================ -->
+          <section id="idocs_docker">
+            <h2>Docker</h2>
+            <p class="lead">The coordinator is the piece that wants to be a container: stateless, always-on, and happiest on a small VPS.</p>
+
+            <pre><code class="bash">cp deploy/docker/.env.example deploy/docker/.env   # set the three keys
+docker compose -f deploy/docker/docker-compose.yml up -d</code></pre>
+
+            <p>Published on every <code>v*</code> tag for <code>linux/amd64</code> and <code>linux/arm64</code>, running as a non-root <code>app</code> user:</p>
+            <pre><code class="bash">ghcr.io/dev-art-solutions/inferhub-coordinator:2.3.0   # also :2.3, :latest
+ghcr.io/dev-art-solutions/inferhub-node:2.3.0</code></pre>
+
+            <div class="alert alert-info" role="alert">
+              <strong>In Docker there is no loopback exemption — set the keys or nothing gets through.</strong>
+              <p class="mb-0 mt-2">On bare metal InferHub skips authentication for loopback callers, which is why the from-source quickstart lets you <code>curl localhost</code> with no key at all. That does not carry over: inside Docker your requests are <em>not</em> loopback — they arrive over the bridge network from outside the container — so every call needs a real Bearer token. This is the safer default and we left it alone, but it surprises people, so the compose stack refuses to start rather than quietly come up with an empty key list you cannot authenticate against.</p>
+            </div>
+
+            <p>The OpenAI base URL becomes <code>http://localhost:5080/v1</code>, the console is at <code>/console</code>, and <code>/health</code> stays open for monitoring.</p>
+
+            <h3>Where the nodes should actually run</h3>
+            <p>The compose file ships a node container so <code>up -d</code> gives you something that works end to end — it reaches Ollama on your host via <code>host.docker.internal</code> (Docker Desktop) or the bridge gateway <code>172.17.0.1</code> (plain Linux). For anything real, run the node <strong>natively on the GPU box</strong> instead: it wants to sit next to a local Ollama, and passing a GPU into a container buys nothing here because the node does no compute of its own — it shells out to Ollama. On Windows that is the <a href="#idocs_windows_service">service host</a>. A containerized coordinator with native nodes dialing out to it is the shape most deployments end up in.</p>
+
+            <h3>Postgres overlay</h3>
+            <p>Layer the overlay to swap the vector store from the local file-backed provider to an external PostgreSQL + pgvector — later files win, so the base file's <code>local</code> provider is replaced:</p>
+            <pre><code class="bash">docker compose -f deploy/docker/docker-compose.yml \
+               -f deploy/docker/compose.postgres.yml up -d</code></pre>
+
+            <p>The full runbook — configuration via environment variables, attaching a native Windows GPU node to a containerized coordinator, and troubleshooting — lives in <a href="https://github.com/Dev-Art-Solutions/InferHub/blob/main/deploy/docker/README.md" target="_blank">deploy/docker/README.md</a>.</p>
           </section>
 
           <hr class="divider">
@@ -776,7 +879,8 @@ var doc = record.Payload.As(MyJsonContext.Default.Doc);</code></pre>
 		============================ -->
           <section id="idocs_changelog">
             <h2>Roadmap &amp; status</h2>
-            <p>InferHub <strong>2.0</strong> closes the RAG mesh: models can read from the vector store inline. Add <code>X-InferHub-Retrieve: &lt;collection&gt;</code> to a normal <code>/api/chat</code> or <code>/api/generate</code> call and the coordinator embeds the query on a GPU node, searches the store (node replica if available, hub-local otherwise), assembles a grounded prompt, and dispatches the generation to a node. Retrieval is opt-in per request — without the header, calls are byte-for-byte identical to v1.x. This sits on top of v1.9's console surface, v1.8's self-healing replicas, v1.7's replication push-protocol, v1.6's text-in/vectors-out loop, the v1.5 vector store, and the v1.4 base (Bearer auth, sticky + least-busy routing, live streaming, pre-stream failover, typed/validated node config, an admin API, and a live management console). On the deployment side, <strong>2.1</strong> adds a first-class way to run a node as a native Windows service without changing the cross-platform worker. <strong>2.2</strong> makes the vector store pluggable and ships the first alternative backend — <strong>PostgreSQL + pgvector</strong> — proving the <code>IVectorStore</code> seam with a second implementation.</p>
+            <p>InferHub <strong>2.3</strong> makes the mesh reachable from the tools you already use: the coordinator now serves an <strong>OpenAI-compatible API</strong> at <code>/v1</code> alongside the Ollama endpoints, so any OpenAI SDK, LangChain app or IDE plugin can point at your own GPU pool by changing one base URL — with the same router, sticky affinity, failover and inline retrieval running underneath, and the translation confined to the coordinator's edge. The same release adds <strong>published container images and a compose stack</strong>, so a coordinator is one command away instead of two terminals.</p>
+            <p>That builds on <strong>2.0</strong>, which closed the RAG mesh: add <code>X-InferHub-Retrieve: &lt;collection&gt;</code> to a normal <code>/api/chat</code> or <code>/api/generate</code> call and the coordinator embeds the query on a GPU node, searches the store (node replica if available, hub-local otherwise), assembles a grounded prompt, and dispatches the generation to a node. Retrieval is opt-in per request — without the header, calls are byte-for-byte identical to v1.x. Underneath sit v1.9's console surface, v1.8's self-healing replicas, v1.7's replication push-protocol, v1.6's text-in/vectors-out loop, the v1.5 vector store, and the v1.4 base (Bearer auth, sticky + least-busy routing, live streaming, pre-stream failover, typed/validated node config, an admin API, and a live management console). On the deployment side, <strong>2.1</strong> runs a node as a native Windows service without changing the cross-platform worker, and <strong>2.2</strong> makes the vector store pluggable with <strong>PostgreSQL + pgvector</strong> as the first alternative backend.</p>
             <div class="table-responsive">
               <table class="table table-bordered">
                 <thead>
@@ -803,10 +907,11 @@ var doc = record.Payload.As(MyJsonContext.Default.Doc);</code></pre>
                   <tr><td>18</td><td>Retrieval-augmented inference</td><td><code>v2.0.0</code></td></tr>
                   <tr><td>19</td><td>Windows-service deployment <span class="text-muted">(deployment addition, not a RAG phase)</span></td><td><code>v2.1.0</code></td></tr>
                   <tr><td>20</td><td>PostgreSQL + pgvector connector</td><td><code>v2.2.0</code></td></tr>
+                  <tr><td>21</td><td>OpenAI-compatible API &amp; Docker distribution</td><td><code>v2.3.0</code></td></tr>
                 </tbody>
               </table>
             </div>
-            <p><strong>What's next.</strong> With the <code>IVectorStore</code> seam now proven by a second implementation (phase 20), the next candidates are additional vector backends (Qdrant, SQL Server vector) and a migration command between providers. Beyond storage: multi-coordinator clustering, persisted affinity, richer audit trails, and additional inference backends (vLLM, llama.cpp) stay on the table. Re-ranking, multi-collection fusion, query rewriting, and tool-calling-style retrieval are separate tracks — future work.</p>
+            <p><strong>What's next.</strong> The obvious gap in retrieval is the ingestion side — a vector store you have to fill by hand is only half a RAG system — so documents-in / chunks-and-embeddings-out plus hybrid search lead the list. After that: streaming <code>tool_calls</code> deltas (mapped in blocking mode today, not yet streamed), quotas and per-key usage accounting, and a cloud-burst fallback backend for when the fleet is saturated. Further vector backends (Qdrant, SQL Server vector) and a migration command between providers stay on the table, as do multi-coordinator clustering, persisted affinity, richer audit trails, and additional inference backends (vLLM, llama.cpp).</p>
             <p class="text-muted"><small>Made by <a href="https://devart.solutions" target="_blank">Dev Art Solutions</a>. We build production-ready AI and agent systems. Say hello: <a href="mailto:hello@devart.solutions">hello@devart.solutions</a></small></p>
           </section>
 
