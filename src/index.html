@@ -102,6 +102,11 @@
               <li class="nav-item"><a class="nav-link" href="#idocs_config_node">Node</a></li>
             </ul>
           </li>
+          <li class="nav-item"><a class="nav-link" href="#idocs_backends">Inference backends</a>
+            <ul class="nav flex-column">
+              <li class="nav-item"><a class="nav-link" href="#idocs_fallback">Cloud burst</a></li>
+            </ul>
+          </li>
           <li class="nav-item"><a class="nav-link" href="#idocs_windows_service">Windows service</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_docker">Docker</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_status">Status &amp; observability</a></li>
@@ -341,6 +346,13 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
                   <tr><td><code>Auth:AdminApiKeys</code></td><td><code>[]</code></td><td>Accepted admin Bearer tokens guarding <code>/api/admin/*</code>. Separate from <code>ApiKeys</code>.</td></tr>
                   <tr><td><code>Auth:RequireAuthForLoopback</code></td><td><code>false</code></td><td>Force loopback callers to present a token too (applies to client and admin scopes).</td></tr>
                   <tr><td><code>Auth:NodeEnrollmentSecret</code></td><td><em>(empty)</em></td><td>Shared secret nodes present when joining the hub. Empty disables enrollment.</td></tr>
+                  <tr><td><code>Fallback:Enabled</code></td><td><code>false</code></td><td><strong>v2.4+</strong> — cloud burst. Read the warning under <a href="#idocs_fallback">Cloud burst</a> before turning this on.</td></tr>
+                  <tr><td><code>Fallback:BaseUrl</code></td><td><em>(empty)</em></td><td><strong>v2.4+</strong> — OpenAI-compatible upstream to burst to.</td></tr>
+                  <tr><td><code>Fallback:ApiKey</code></td><td><em>(empty)</em></td><td><strong>v2.4+</strong> — Bearer token for the upstream. Env (<code>Fallback__ApiKey</code>) or user-secrets only.</td></tr>
+                  <tr><td><code>Fallback:Trigger</code></td><td><code>no-node</code></td><td><strong>v2.4+</strong> — <code>no-node</code>, or <code>no-node-or-saturated</code> to also burst when every capable node is at its declared <code>MaxConcurrency</code>.</td></tr>
+                  <tr><td><code>Fallback:ModelMap</code></td><td><code>{}</code></td><td><strong>v2.4+</strong> — local model name → upstream model name. <strong>Only mapped models are ever sent upstream.</strong></td></tr>
+                  <tr><td><code>Fallback:AllowedModels</code></td><td><code>[]</code></td><td><strong>v2.4+</strong> — narrower allowlist within the map. Empty = every mapped model.</td></tr>
+                  <tr><td><code>Fallback:TimeoutSeconds</code></td><td><code>300</code></td><td><strong>v2.4+</strong> — per-request timeout against the upstream.</td></tr>
                   <tr><td><code>VectorStore:Enabled</code></td><td><code>false</code></td><td>Master switch for the vector store (phase 13+). Off = no persisted state, original v1.4 contract.</td></tr>
                   <tr><td><code>VectorStore:Provider</code></td><td><code>local</code></td><td><strong>v2.2+</strong> — storage backend: <code>local</code> (file-backed, replicated) | <code>postgres</code> (external pgvector).</td></tr>
                   <tr><td><code>VectorStore:DataDirectory</code></td><td><code>./data/vectors</code></td><td>Where the raw store + snapshots live on the coordinator. Local provider only.</td></tr>
@@ -388,13 +400,91 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
                   <tr><td><code>Node:Labels</code></td><td><code>{}</code></td><td>Free-form key/value pairs surfaced on <code>GET /api/nodes</code>.</td></tr>
                   <tr><td><code>Node:Models:Include</code></td><td><code>[]</code></td><td>Whitelist of model names to advertise (empty = all).</td></tr>
                   <tr><td><code>Node:Models:Exclude</code></td><td><code>[]</code></td><td>Names dropped before reporting.</td></tr>
-                  <tr><td><code>Backend:Type</code></td><td><code>ollama</code></td><td>Inference backend selector.</td></tr>
-                  <tr><td><code>Ollama:Endpoint</code></td><td><code>http://localhost:11434/</code></td><td>Local Ollama URL (absolute http/https). Consumed via <a href="https://ollamaclient.devart.solutions" target="_blank">OllamaClient</a>.</td></tr>
+                  <tr><td><code>Backend:Type</code></td><td><code>ollama</code></td><td>Inference backend selector: <code>ollama</code> or <code>openai</code> (<strong>v2.4+</strong>). See <a href="#idocs_backends">Inference backends</a>.</td></tr>
+                  <tr><td><code>Ollama:Endpoint</code></td><td><code>http://localhost:11434/</code></td><td>Local Ollama URL (absolute http/https). Consumed via <a href="https://ollamaclient.devart.solutions" target="_blank">OllamaClient</a>. Used when <code>Backend:Type=ollama</code>.</td></tr>
                   <tr><td><code>Ollama:RequestTimeout</code></td><td><code>00:05:00</code></td><td>Timeout for a single Ollama call. Matches the coordinator's <code>Dispatcher:TimeoutSeconds</code> so the node never gives up first; raise it for very large models whose cold load is slow.</td></tr>
+                  <tr><td><code>OpenAi:BaseUrl</code></td><td><em>(empty)</em></td><td><strong>v2.4+</strong> — upstream OpenAI-compatible server, e.g. <code>http://localhost:8000/v1</code>. <strong>Required when <code>Backend:Type=openai</code></strong>; the node refuses to start without it.</td></tr>
+                  <tr><td><code>OpenAi:ApiKey</code></td><td><em>(empty)</em></td><td><strong>v2.4+</strong> — Bearer token for the upstream. Env (<code>OpenAi__ApiKey</code>) or user-secrets only.</td></tr>
+                  <tr><td><code>OpenAi:TimeoutSeconds</code></td><td><code>300</code></td><td><strong>v2.4+</strong> — timeout for a single upstream call. Same reasoning as <code>Ollama:RequestTimeout</code>.</td></tr>
+                  <tr><td><code>OpenAi:Models:Include</code></td><td><code>[]</code></td><td><strong>v2.4+</strong> — allowlist of upstream models to advertise. Effectively mandatory against a hosted provider.</td></tr>
+                  <tr><td><code>OpenAi:Models:Exclude</code></td><td><code>[]</code></td><td><strong>v2.4+</strong> — names dropped before reporting.</td></tr>
                   <tr><td><code>Vector:ReplicaDirectory</code></td><td><code>./data/vector-replicas</code></td><td><strong>v1.7+</strong> — where the node persists assigned vector replicas. Loaded at startup so a restart doesn't trigger a full re-push.</td></tr>
                 </tbody>
               </table>
             </div>
+          </section>
+
+          <hr class="divider">
+
+          <!-- Inference backends
+		============================ -->
+          <section id="idocs_backends">
+            <h2>Inference backends</h2>
+            <p class="lead">A node runs one backend behind the <code>IInferenceBackend</code> seam. The coordinator neither knows nor cares which one.</p>
+            <p>The coordinator hands a node an Ollama-shaped job and gets an Ollama-shaped response back, whatever actually ran it. Since <strong>v2.4</strong> there are two implementations, selected by <code>Backend:Type</code>.</p>
+            <div class="table-responsive">
+              <table class="table table-bordered">
+                <thead>
+                  <tr><th><code>Backend:Type</code></th><th>Drives</th><th>Why</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td><code>ollama</code> <em>(default)</em></td><td>Ollama</td><td>One machine, one model at a time, minimal ceremony.</td></tr>
+                  <tr><td rowspan="5"><code>openai</code> <strong>(v2.4+)</strong></td><td><strong>vLLM</strong></td><td>Continuous batching and paged attention — the difference between one GPU serving four users and one serving forty.</td></tr>
+                  <tr><td><strong>llama.cpp server</strong></td><td>GGUF quants, CPU/Metal, a tiny footprint.</td></tr>
+                  <tr><td><strong>LM Studio</strong></td><td>A desktop model runner people already have open.</td></tr>
+                  <tr><td><strong>TGI</strong></td><td>HuggingFace's inference server.</td></tr>
+                  <tr><td>Hosted providers</td><td>OpenAI, or anything else wearing the same dialect.</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p>One implementation covers all five, because they all converged on the same wire format. Three roadmap items — "vLLM backend", "llama.cpp backend", "hosted backend" — collapsed into one, entirely because v2.3's translation code could be run backwards.</p>
+<pre><code class="json">// src/InferHub.Node/appsettings.json
+{
+  "Backend": { "Type": "openai" },
+  "OpenAi": {
+    "BaseUrl": "http://localhost:8000/v1",
+    "TimeoutSeconds": 300,
+    "Models": {
+      "Include": ["meta-llama/Llama-3.1-8B-Instruct"]
+    }
+  }
+}</code></pre>
+            <p>Set <code>OpenAi:ApiKey</code> through the environment (<code>OpenAi__ApiKey</code>) or user-secrets — never in <code>appsettings.json</code>. A node configured with <code>Backend:Type=openai</code> and no <code>BaseUrl</code> <strong>refuses to start</strong> and names the missing key: a node that boots and then 500s on every job it is handed is worse than one that doesn't boot.</p>
+
+            <div class="alert alert-warning" role="alert">
+              <strong>Against a hosted provider, an allowlist is effectively mandatory.</strong>
+              A hosted catalogue is hundreds of models the node cannot actually serve. Report them all and the coordinator will happily route anything to it — so set <code>OpenAi:Models:Include</code>. vLLM and llama.cpp report only what they are serving, so there it is optional.
+            </div>
+
+            <p><code>Digest</code> and <code>SizeBytes</code> come back <code>null</code>: an OpenAI-compatible server reports a model name and nothing else, and inventing values would be worse than admitting it. <code>/api/tags</code> and the console render nulls as <code>—</code>.</p>
+
+            <h3 id="idocs_fallback">Cloud burst (v2.4+)</h3>
+            <p>When the router finds no node for a model, the coordinator can forward the request to a configured OpenAI-compatible upstream instead of returning <code>404</code>. A GPU box that is switched off becomes degradation rather than an outage.</p>
+<pre><code class="json">// src/InferHub.Coordinator/appsettings.json
+{
+  "Fallback": {
+    "Enabled": true,
+    "BaseUrl": "https://api.openai.com/v1",
+    "Trigger": "no-node",                    // or "no-node-or-saturated"
+    "ModelMap": { "llama3": "gpt-4o-mini" }, // the map is the consent
+    "AllowedModels": []                      // empty = every mapped model
+  }
+}</code></pre>
+
+            <div class="alert alert-warning" role="alert">
+              <strong>This feature can send a user's prompt to a third party.</strong>
+              Doing that by surprise, because somebody's desktop was asleep, is a betrayal rather than a feature. So it is fenced in, on purpose:
+              <ul class="mb-0">
+                <li><strong>Off by default.</strong> Upgrading to v2.4 changes nothing.</li>
+                <li><strong>Mapped models only.</strong> A model absent from <code>ModelMap</code> is never sent upstream, ever. There is no wildcard.</li>
+                <li><strong>Always tagged.</strong> Every fallback response carries <code>X-InferHub-Served-By: fallback</code>; node-served responses carry <code>node</code>. Check the header, not your assumptions.</li>
+                <li><strong>Always counted.</strong> <code>/api/status</code> and the status page report cloud burst <em>and its counter</em> whether it is on or off — "is this thing sending my prompts anywhere?" should not require reading a config file.</li>
+                <li><strong>Never stored.</strong> The coordinator forwards in flight and streams straight through. It retains neither the prompt nor the answer — the same rule that has governed conversations since 0.7.</li>
+              </ul>
+            </div>
+
+            <p><code>Trigger: no-node-or-saturated</code> also bursts when <em>every</em> node holding the model is at its <strong>declared</strong> <code>Node:MaxConcurrency</code>. A node that declared no cap is never saturated — there is no number to compare against, and inventing one would burst to a paid upstream on a guess. And if a saturation burst fails while a node exists, the request goes to the node: bursting on saturation is an optimisation, not a promise.</p>
+            <p>With fallback disabled, a request for a model no node holds returns exactly the <code>404</code> it always has.</p>
           </section>
 
           <hr class="divider">
@@ -879,7 +969,8 @@ var doc = record.Payload.As(MyJsonContext.Default.Doc);</code></pre>
 		============================ -->
           <section id="idocs_changelog">
             <h2>Roadmap &amp; status</h2>
-            <p>InferHub <strong>2.3</strong> makes the mesh reachable from the tools you already use: the coordinator now serves an <strong>OpenAI-compatible API</strong> at <code>/v1</code> alongside the Ollama endpoints, so any OpenAI SDK, LangChain app or IDE plugin can point at your own GPU pool by changing one base URL — with the same router, sticky affinity, failover and inline retrieval running underneath, and the translation confined to the coordinator's edge. The same release adds <strong>published container images and a compose stack</strong>, so a coordinator is one command away instead of two terminals.</p>
+            <p>InferHub <strong>2.4</strong> teaches the mesh to speak the OpenAI format <em>upstream</em>, not just to its clients. A node is no longer synonymous with Ollama: set <code>Backend:Type=openai</code> and it drives <strong>vLLM</strong> — continuous batching, the difference between one GPU serving four users and one serving forty — or llama.cpp's server, LM Studio, TGI, or a hosted provider. One backend implementation covers all of them, because they all landed on the same dialect. The same release adds <strong>cloud burst</strong>: when the fleet holds no node for a model, the coordinator can fall back to a configured upstream instead of returning a flat <code>404</code> — off by default, mapped models only, tagged in every response, counted on the status page, and never stored.</p>
+            <p>That builds on <strong>2.3</strong>, which made the mesh reachable from the tools you already use: an <strong>OpenAI-compatible API</strong> at <code>/v1</code> alongside the Ollama endpoints, so any OpenAI SDK, LangChain app or IDE plugin can point at your own GPU pool by changing one base URL — with the same router, sticky affinity, failover and inline retrieval running underneath. It also brought <strong>published container images and a compose stack</strong>, so a coordinator is one command away instead of two terminals.</p>
             <p>That builds on <strong>2.0</strong>, which closed the RAG mesh: add <code>X-InferHub-Retrieve: &lt;collection&gt;</code> to a normal <code>/api/chat</code> or <code>/api/generate</code> call and the coordinator embeds the query on a GPU node, searches the store (node replica if available, hub-local otherwise), assembles a grounded prompt, and dispatches the generation to a node. Retrieval is opt-in per request — without the header, calls are byte-for-byte identical to v1.x. Underneath sit v1.9's console surface, v1.8's self-healing replicas, v1.7's replication push-protocol, v1.6's text-in/vectors-out loop, the v1.5 vector store, and the v1.4 base (Bearer auth, sticky + least-busy routing, live streaming, pre-stream failover, typed/validated node config, an admin API, and a live management console). On the deployment side, <strong>2.1</strong> runs a node as a native Windows service without changing the cross-platform worker, and <strong>2.2</strong> makes the vector store pluggable with <strong>PostgreSQL + pgvector</strong> as the first alternative backend.</p>
             <div class="table-responsive">
               <table class="table table-bordered">
@@ -908,10 +999,11 @@ var doc = record.Payload.As(MyJsonContext.Default.Doc);</code></pre>
                   <tr><td>19</td><td>Windows-service deployment <span class="text-muted">(deployment addition, not a RAG phase)</span></td><td><code>v2.1.0</code></td></tr>
                   <tr><td>20</td><td>PostgreSQL + pgvector connector</td><td><code>v2.2.0</code></td></tr>
                   <tr><td>21</td><td>OpenAI-compatible API &amp; Docker distribution</td><td><code>v2.3.0</code></td></tr>
+                  <tr><td>22</td><td>OpenAI-compatible node backend &amp; cloud burst</td><td><code>v2.4.0</code></td></tr>
                 </tbody>
               </table>
             </div>
-            <p><strong>What's next.</strong> The obvious gap in retrieval is the ingestion side — a vector store you have to fill by hand is only half a RAG system — so documents-in / chunks-and-embeddings-out plus hybrid search lead the list. After that: streaming <code>tool_calls</code> deltas (mapped in blocking mode today, not yet streamed), quotas and per-key usage accounting, and a cloud-burst fallback backend for when the fleet is saturated. Further vector backends (Qdrant, SQL Server vector) and a migration command between providers stay on the table, as do multi-coordinator clustering, persisted affinity, richer audit trails, and additional inference backends (vLLM, llama.cpp).</p>
+            <p><strong>What's next.</strong> The obvious gap in retrieval is the ingestion side — a vector store you have to fill by hand is only half a RAG system — so documents-in / chunks-and-embeddings-out is next, followed by hybrid search and reranking with an evaluation harness to prove they actually helped. After that: quotas and per-key usage accounting, then fleet-wide remote model management. Streaming <code>tool_calls</code> deltas (mapped in blocking mode today, not yet streamed), further vector backends (Qdrant, SQL Server vector) and a migration command between providers stay on the table, as do multi-coordinator clustering, persisted affinity and richer audit trails.</p>
             <p class="text-muted"><small>Made by <a href="https://devart.solutions" target="_blank">Dev Art Solutions</a>. We build production-ready AI and agent systems. Say hello: <a href="mailto:hello@devart.solutions">hello@devart.solutions</a></small></p>
           </section>
 
