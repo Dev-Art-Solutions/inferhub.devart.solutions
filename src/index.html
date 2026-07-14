@@ -114,6 +114,7 @@
           <li class="nav-item"><a class="nav-link" href="#idocs_vector">Vector store</a>
             <ul class="nav flex-column">
               <li class="nav-item"><a class="nav-link" href="#idocs_vector_postgres">PostgreSQL + pgvector</a></li>
+              <li class="nav-item"><a class="nav-link" href="#idocs_ingestion">Document ingestion</a></li>
               <li class="nav-item"><a class="nav-link" href="#idocs_rag">Retrieval-augmented inference</a></li>
             </ul>
           </li>
@@ -353,6 +354,7 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
                   <tr><td><code>Fallback:ModelMap</code></td><td><code>{}</code></td><td><strong>v2.4+</strong> — local model name → upstream model name. <strong>Only mapped models are ever sent upstream.</strong></td></tr>
                   <tr><td><code>Fallback:AllowedModels</code></td><td><code>[]</code></td><td><strong>v2.4+</strong> — narrower allowlist within the map. Empty = every mapped model.</td></tr>
                   <tr><td><code>Fallback:TimeoutSeconds</code></td><td><code>300</code></td><td><strong>v2.4+</strong> — per-request timeout against the upstream.</td></tr>
+                  <tr><td><code>Ingestion:*</code></td><td>—</td><td><strong>v2.5+</strong> — document ingestion. Inert unless <code>VectorStore:Enabled</code>. Keys and defaults under <a href="#idocs_ingestion">Document ingestion</a>.</td></tr>
                   <tr><td><code>VectorStore:Enabled</code></td><td><code>false</code></td><td>Master switch for the vector store (phase 13+). Off = no persisted state, original v1.4 contract.</td></tr>
                   <tr><td><code>VectorStore:Provider</code></td><td><code>local</code></td><td><strong>v2.2+</strong> — storage backend: <code>local</code> (file-backed, replicated) | <code>postgres</code> (external pgvector).</td></tr>
                   <tr><td><code>VectorStore:DataDirectory</code></td><td><code>./data/vectors</code></td><td>Where the raw store + snapshots live on the coordinator. Local provider only.</td></tr>
@@ -769,6 +771,65 @@ curl -X POST http://localhost:5080/api/vector/docs/query \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -d '{"vector":[1,0,0],"k":3}'</code></pre>
 
+            <h3 id="idocs_ingestion">Document ingestion (v2.5+)</h3>
+            <p>The vector store has existed since v1.5 and inline retrieval since v2.0 — but until v2.5 you had to <em>fill</em> the store yourself, with vectors you computed elsewhere or text pasted in by hand. Everything in between, the actual work of turning a folder of PDFs into something a model can answer from, was left as an exercise for the reader. v2.5 closes it: upload a document and the coordinator extracts its text, splits it into overlapping chunks, embeds those chunks <strong>on the GPU fleet</strong> — through the same dispatcher that serves chat, so the coordinator grows no embedding path of its own — and writes them to whichever vector store you configured.</p>
+<pre><code class="bash"># The collection must exist first: its dimension has to match your embedding model.
+curl -X POST http://your-coordinator:5080/api/admin/vector/collections \
+  -H "Authorization: Bearer YOUR_ADMIN_KEY" \
+  -d '{"name":"handbook","dimension":768,"distance":"cosine"}'
+
+# Then upload. Text, Markdown, HTML, JSON, PDF.
+curl -X POST http://your-coordinator:5080/api/collections/handbook/documents \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -F file=@employee-handbook.pdf</code></pre>
+<pre><code class="json">{ "documentId": "employee-handbook.pdf", "collection": "handbook",
+  "status": "ingested", "chunks": 214, "chunksEmbedded": 214,
+  "bytes": 1048576, "contentHash": "48096003…" }</code></pre>
+            <p>After that, any request carrying <code>X-InferHub-Retrieve: handbook</code> — including one from an OpenAI SDK, via default headers — comes back grounded, with citations that name the document and the page.</p>
+            <div class="table-responsive">
+              <table class="table table-bordered">
+                <thead>
+                  <tr><th>Endpoint</th><th>Purpose</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td><code>POST /api/collections/{c}/documents</code></td><td>Upload. <code>multipart/form-data</code> (<code>file</code>, optional <code>id</code>, <code>metadata</code>, <code>model</code>) or JSON (<code>{ id?, text, metadata? }</code>).</td></tr>
+                  <tr><td><code>GET /api/collections/{c}/documents</code></td><td>List: id, chunk count, bytes, content hash, ingested-at, status.</td></tr>
+                  <tr><td><code>GET /api/collections/{c}/documents/{id}/chunks</code></td><td>The chunks themselves, in order, with page numbers.</td></tr>
+                  <tr><td><code>DELETE /api/collections/{c}/documents/{id}</code></td><td>Removes every chunk of that document.</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p>These are guarded by the <strong>client</strong> key (<code>Auth:ApiKeys</code>), not the admin key. Ingesting is a client action, and forcing an admin key on it would push people toward using one key for everything.</p>
+
+            <div class="alert alert-warning" role="alert">
+              <strong>There is no OCR, and there never will be.</strong> A PDF whose text layer is empty or near-empty is <strong>rejected</strong> with an error saying it looks like a scan. It would have been easy to bolt on an OCR pass and produce something that <em>usually</em> works — but a bad extraction does not fail. It succeeds, quietly, and fills your corpus with near-gibberish that retrieves plausible nonsense; the failure surfaces months later as a model that is subtly, unaccountably wrong. We would rather refuse the file. If a document genuinely needs OCR, that is a decision its owner should make deliberately, with a tool they chose, before it reaches InferHub.
+            </div>
+
+            <p>Three more decisions worth knowing about, because they are the ones that would have been easy to get wrong:</p>
+            <ul>
+              <li><strong>Your file is not kept.</strong> Chunk text, a content hash and metadata — not the document. A retrieval system that also quietly becomes a document store has two sources of truth and a data-retention question its owner never agreed to answer. If you need the original, you already have it.</li>
+              <li><strong>Re-ingesting is idempotent.</strong> Chunk ids derive from the document id and the chunk index, so uploading a revision <em>replaces</em> its chunks rather than layering a second copy underneath the first — including sweeping the tail chunks when the revision is shorter, because a stale chunk retrieves as confidently as a live one. Upload identical bytes twice and the second call does no work and says <code>"status": "unchanged"</code>.</li>
+              <li><strong>A partial ingest is a failure and says so.</strong> If the fleet goes away mid-document, the response is <code>500</code> with <code>"status": "partial"</code> and the chunk counts. The chunks that landed are real and visible, the document lists as <code>partial</code>, and re-posting the same bytes <em>resumes</em> rather than no-ops. A half-ingested document that claims success is worse than a failure.</li>
+            </ul>
+
+            <p>Ingestion is provider-agnostic: it works identically under the file-backed local store (where the new chunks replicate to your nodes through the usual path) and under PostgreSQL + pgvector. The embedding work is batched with a bounded number of chunks in flight, so ingesting a three-hundred-page manual does not starve the interactive chat traffic sharing the same GPUs. The console gained a <strong>Documents</strong> panel: pick a collection, drop a file, watch the chunk count climb, preview chunks, delete a document.</p>
+
+            <div class="table-responsive">
+              <table class="table table-bordered">
+                <thead>
+                  <tr><th>Key</th><th>Default</th><th>Purpose</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td><code>Ingestion:MaxChars</code></td><td><code>1200</code></td><td>Target chunk size, in characters.</td></tr>
+                  <tr><td><code>Ingestion:OverlapChars</code></td><td><code>150</code></td><td>Tail context repeated at the head of the next chunk.</td></tr>
+                  <tr><td><code>Ingestion:MaxDocumentBytes</code></td><td><code>26214400</code></td><td>Upload ceiling (25 MB). Above ~30 MB you must also raise Kestrel's <code>MaxRequestBodySize</code>.</td></tr>
+                  <tr><td><code>Ingestion:EmbeddingBatchSize</code></td><td><code>16</code></td><td>Chunks per batch — and the cap on chunks in flight.</td></tr>
+                  <tr><td><code>Ingestion:EmbeddingModel</code></td><td><em>(empty)</em></td><td>Falls back to <code>VectorStore:DefaultEmbeddingModel</code>.</td></tr>
+                  <tr><td><code>Ingestion:MaxRetriesPerBatch</code></td><td><code>3</code></td><td>Attempts per batch before the document is marked <code>partial</code>.</td></tr>
+                </tbody>
+              </table>
+            </div>
+
             <h3 id="idocs_rag">Retrieval-augmented inference (v2.0+)</h3>
             <p>v2.0 closes the RAG mesh: models can read from the store inline. A client opts a normal <code>/api/chat</code> or <code>/api/generate</code> call into retrieval by naming a collection; the coordinator embeds the query on a node, searches the store, injects the top matches as context, and dispatches the generation to a node. The Ollama-shaped body stays pure — retrieval is driven entirely by headers, and the retrieved source ids come back on a response header.</p>
             <div class="table-responsive">
@@ -780,9 +841,15 @@ curl -X POST http://localhost:5080/api/vector/docs/query \
                   <tr><td><code>X-InferHub-Retrieve</code></td><td>request</td><td>Collection name. Presence enables RAG for this call.</td></tr>
                   <tr><td><code>X-InferHub-Retrieve-K</code></td><td>request</td><td>Top-k override, clamped to <code>VectorStore:Retrieval:MaxRecords</code>.</td></tr>
                   <tr><td><code>X-InferHub-Retrieve-Model</code></td><td>request</td><td>Embedding model override (defaults to <code>VectorStore:DefaultEmbeddingModel</code>).</td></tr>
-                  <tr><td><code>X-InferHub-Sources</code></td><td>response</td><td>JSON array of the retrieved record ids used to ground the answer.</td></tr>
+                  <tr><td><code>X-InferHub-Sources</code></td><td>response</td><td>JSON array of the retrieved chunks used to ground the answer. <strong>Changed shape in v2.5</strong> — see below.</td></tr>
                 </tbody>
               </table>
+            </div>
+            <div class="alert alert-warning" role="alert">
+              <strong><code>X-InferHub-Sources</code> changed shape in v2.5.0.</strong> It used to carry bare chunk ids (<code>["a1b2…","c3d4…"]</code>); it now carries objects that name where each chunk came from:
+<pre class="mb-0"><code class="json">X-InferHub-Sources: [{"id":"5d981c…","documentId":"employee-handbook.pdf","page":1},
+                     {"id":"0b72c7…","documentId":"policy.md"}]</code></pre>
+              <p class="mb-0 mt-2">A chunk id on its own identifies the row we retrieved but tells the reader nothing about <em>where the answer came from</em>, and a citation that cannot name a document and a page is not a citation. <code>documentId</code> and <code>page</code> are omitted — not null — for records written straight through <code>/api/vector</code>, which never had a document. If you parse this header, you need to update.</p>
             </div>
             <p>Example — a grounded chat call:</p>
             <pre><code class="bash">curl http://your-coordinator:5080/api/chat \
@@ -969,7 +1036,8 @@ var doc = record.Payload.As(MyJsonContext.Default.Doc);</code></pre>
 		============================ -->
           <section id="idocs_changelog">
             <h2>Roadmap &amp; status</h2>
-            <p>InferHub <strong>2.4</strong> teaches the mesh to speak the OpenAI format <em>upstream</em>, not just to its clients. A node is no longer synonymous with Ollama: set <code>Backend:Type=openai</code> and it drives <strong>vLLM</strong> — continuous batching, the difference between one GPU serving four users and one serving forty — or llama.cpp's server, LM Studio, TGI, or a hosted provider. One backend implementation covers all of them, because they all landed on the same dialect. The same release adds <strong>cloud burst</strong>: when the fleet holds no node for a model, the coordinator can fall back to a configured upstream instead of returning a flat <code>404</code> — off by default, mapped models only, tagged in every response, counted on the status page, and never stored.</p>
+            <p>InferHub <strong>2.5</strong> lets you <em>fill</em> the vector store at last. Upload a document — text, Markdown, HTML, JSON, or a PDF's text layer — and the coordinator extracts it, chunks it, embeds the chunks on your GPU fleet through the same dispatcher that serves chat, and stores them; any request carrying <code>X-InferHub-Retrieve</code> then comes back grounded, with citations down to the document and page. Three things it deliberately does <em>not</em> do: keep your file (chunks and a hash, nothing else), duplicate silently (re-ingesting replaces; identical bytes are a no-op and say so), or OCR (a scanned PDF is <strong>rejected</strong> with an error, not turned into a corpus of confident gibberish).</p>
+            <p>That builds on <strong>2.4</strong>, which taught the mesh to speak the OpenAI format <em>upstream</em>, not just to its clients. A node is no longer synonymous with Ollama: set <code>Backend:Type=openai</code> and it drives <strong>vLLM</strong> — continuous batching, the difference between one GPU serving four users and one serving forty — or llama.cpp's server, LM Studio, TGI, or a hosted provider. One backend implementation covers all of them, because they all landed on the same dialect. The same release adds <strong>cloud burst</strong>: when the fleet holds no node for a model, the coordinator can fall back to a configured upstream instead of returning a flat <code>404</code> — off by default, mapped models only, tagged in every response, counted on the status page, and never stored.</p>
             <p>That builds on <strong>2.3</strong>, which made the mesh reachable from the tools you already use: an <strong>OpenAI-compatible API</strong> at <code>/v1</code> alongside the Ollama endpoints, so any OpenAI SDK, LangChain app or IDE plugin can point at your own GPU pool by changing one base URL — with the same router, sticky affinity, failover and inline retrieval running underneath. It also brought <strong>published container images and a compose stack</strong>, so a coordinator is one command away instead of two terminals.</p>
             <p>That builds on <strong>2.0</strong>, which closed the RAG mesh: add <code>X-InferHub-Retrieve: &lt;collection&gt;</code> to a normal <code>/api/chat</code> or <code>/api/generate</code> call and the coordinator embeds the query on a GPU node, searches the store (node replica if available, hub-local otherwise), assembles a grounded prompt, and dispatches the generation to a node. Retrieval is opt-in per request — without the header, calls are byte-for-byte identical to v1.x. Underneath sit v1.9's console surface, v1.8's self-healing replicas, v1.7's replication push-protocol, v1.6's text-in/vectors-out loop, the v1.5 vector store, and the v1.4 base (Bearer auth, sticky + least-busy routing, live streaming, pre-stream failover, typed/validated node config, an admin API, and a live management console). On the deployment side, <strong>2.1</strong> runs a node as a native Windows service without changing the cross-platform worker, and <strong>2.2</strong> makes the vector store pluggable with <strong>PostgreSQL + pgvector</strong> as the first alternative backend.</p>
             <div class="table-responsive">
@@ -1000,10 +1068,11 @@ var doc = record.Payload.As(MyJsonContext.Default.Doc);</code></pre>
                   <tr><td>20</td><td>PostgreSQL + pgvector connector</td><td><code>v2.2.0</code></td></tr>
                   <tr><td>21</td><td>OpenAI-compatible API &amp; Docker distribution</td><td><code>v2.3.0</code></td></tr>
                   <tr><td>22</td><td>OpenAI-compatible node backend &amp; cloud burst</td><td><code>v2.4.0</code></td></tr>
+                  <tr><td>23</td><td>Document ingestion pipeline</td><td><code>v2.5.0</code></td></tr>
                 </tbody>
               </table>
             </div>
-            <p><strong>What's next.</strong> The obvious gap in retrieval is the ingestion side — a vector store you have to fill by hand is only half a RAG system — so documents-in / chunks-and-embeddings-out is next, followed by hybrid search and reranking with an evaluation harness to prove they actually helped. After that: quotas and per-key usage accounting, then fleet-wide remote model management. Streaming <code>tool_calls</code> deltas (mapped in blocking mode today, not yet streamed), further vector backends (Qdrant, SQL Server vector) and a migration command between providers stay on the table, as do multi-coordinator clustering, persisted affinity and richer audit trails.</p>
+            <p><strong>What's next.</strong> Retrieval can now be <em>filled</em> — the remaining gap is retrieval <em>quality</em>. Pure vector search is excellent at "what is this about" and poor at "find the exact thing I named": ask it for an error code, a part number or a surname and it returns five well-chosen paragraphs on the general subject and not the one line you wanted. Hybrid search (keyword and vector, fused by rank) and an opt-in reranker come next, shipped in the same release as an evaluation harness — because "hybrid search improved retrieval" is an empirical claim, and if we cannot measure it we should not write it in a blog post. After that: quotas and per-key usage accounting, then fleet-wide remote model management. Streaming <code>tool_calls</code> deltas (mapped in blocking mode today, not yet streamed), further vector backends (Qdrant, SQL Server vector) and a migration command between providers stay on the table, as do multi-coordinator clustering, persisted affinity and richer audit trails.</p>
             <p class="text-muted"><small>Made by <a href="https://devart.solutions" target="_blank">Dev Art Solutions</a>. We build production-ready AI and agent systems. Say hello: <a href="mailto:hello@devart.solutions">hello@devart.solutions</a></small></p>
           </section>
 
