@@ -116,6 +116,7 @@
               <li class="nav-item"><a class="nav-link" href="#idocs_vector_postgres">PostgreSQL + pgvector</a></li>
               <li class="nav-item"><a class="nav-link" href="#idocs_ingestion">Document ingestion</a></li>
               <li class="nav-item"><a class="nav-link" href="#idocs_rag">Retrieval-augmented inference</a></li>
+              <li class="nav-item"><a class="nav-link" href="#idocs_hybrid">Hybrid search &amp; reranking</a></li>
             </ul>
           </li>
           <li class="nav-item"><a class="nav-link" href="#idocs_resilience">Resilience &amp; failover</a></li>
@@ -368,6 +369,12 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
                   <tr><td><code>VectorStore:Retrieval:MaxRecords</code></td><td><code>8</code></td><td>Hard cap on injected records per retrieval request (must be ≥ DefaultK).</td></tr>
                   <tr><td><code>VectorStore:Retrieval:OnMissing</code></td><td><code>error</code></td><td><code>error</code> | <code>passthrough</code> when retrieval can't run (store disabled, unknown collection, no embedding node).</td></tr>
                   <tr><td><code>VectorStore:Retrieval:Template</code></td><td><em>(built-in)</em></td><td><strong>v2.0+</strong> — prompt template applied when a request opts into retrieval; must contain the literal <code>{context}</code> placeholder. Default asks the model to answer from context and admit when it can't.</td></tr>
+                  <tr><td><code>VectorStore:Retrieval:Mode</code></td><td><code>vector</code></td><td><strong>v2.6+</strong> — default retrieval mode: <code>vector</code> | <code>keyword</code> | <code>hybrid</code>. Per-request via <code>X-InferHub-Retrieve-Mode</code>.</td></tr>
+                  <tr><td><code>VectorStore:Retrieval:CandidatesPerBranch</code></td><td><code>20</code></td><td><strong>v2.6+</strong> — candidates each branch fetches before RRF fusion in hybrid mode.</td></tr>
+                  <tr><td><code>VectorStore:Retrieval:Rerank</code></td><td><code>none</code></td><td><strong>v2.6+</strong> — default reranker: <code>none</code> | <code>llm</code>. Per-request via <code>X-InferHub-Rerank</code>.</td></tr>
+                  <tr><td><code>VectorStore:Retrieval:RerankModel</code></td><td><em>(request model)</em></td><td><strong>v2.6+</strong> — chat model used by the LLM reranker.</td></tr>
+                  <tr><td><code>VectorStore:Retrieval:RerankCandidates</code></td><td><code>20</code></td><td><strong>v2.6+</strong> — max candidates sent to the reranker in one round trip.</td></tr>
+                  <tr><td><code>VectorStore:Retrieval:RerankTimeoutSeconds</code></td><td><code>20</code></td><td><strong>v2.6+</strong> — reranker timeout; past it the un-reranked order is kept.</td></tr>
                   <tr><td><code>VectorStore:Postgres:ConnectionString</code></td><td><em>(empty)</em></td><td><strong>v2.2+</strong> — Npgsql connection string. <strong>Required</strong> when <code>Provider=postgres</code>. Set via env (<code>VectorStore__Postgres__ConnectionString</code>) or user-secrets, never in <code>appsettings.json</code>.</td></tr>
                   <tr><td><code>VectorStore:Postgres:Schema</code></td><td><code>inferhub</code></td><td><strong>v2.2+</strong> — schema holding the registry and per-collection tables (<code>^[a-z_][a-z0-9_]*$</code>).</td></tr>
                   <tr><td><code>VectorStore:Postgres:TablePrefix</code></td><td><code>vec_</code></td><td><strong>v2.2+</strong> — prefix for per-collection tables (<code>^[a-z_][a-z0-9_]*$</code>).</td></tr>
@@ -841,6 +848,8 @@ curl -X POST http://your-coordinator:5080/api/collections/handbook/documents \
                   <tr><td><code>X-InferHub-Retrieve</code></td><td>request</td><td>Collection name. Presence enables RAG for this call.</td></tr>
                   <tr><td><code>X-InferHub-Retrieve-K</code></td><td>request</td><td>Top-k override, clamped to <code>VectorStore:Retrieval:MaxRecords</code>.</td></tr>
                   <tr><td><code>X-InferHub-Retrieve-Model</code></td><td>request</td><td>Embedding model override (defaults to <code>VectorStore:DefaultEmbeddingModel</code>).</td></tr>
+                  <tr><td><code>X-InferHub-Retrieve-Mode</code></td><td>request</td><td><strong>v2.6+</strong> — <code>vector</code> (default) &vert; <code>keyword</code> &vert; <code>hybrid</code>. An unknown value is a <code>400</code>. See <a href="#idocs_hybrid">Hybrid search &amp; reranking</a>.</td></tr>
+                  <tr><td><code>X-InferHub-Rerank</code></td><td>request</td><td><strong>v2.6+</strong> — <code>true</code> to run an opt-in LLM rerank pass over the candidates.</td></tr>
                   <tr><td><code>X-InferHub-Sources</code></td><td>response</td><td>JSON array of the retrieved chunks used to ground the answer. <strong>Changed shape in v2.5</strong> — see below.</td></tr>
                 </tbody>
               </table>
@@ -865,6 +874,31 @@ curl -X POST http://your-coordinator:5080/api/collections/handbook/documents \
               <li><strong>Rule preserved: no conversation content on the hub.</strong> The augmented request body is assembled in-flight and forwarded to the node — nothing about the message or the retrieved context is retained on the coordinator.</li>
               <li><strong>Opt-in per request.</strong> A call without <code>X-InferHub-Retrieve</code> is byte-for-byte identical to v1.x — same routing, same streaming, same body.</li>
             </ul>
+
+            <h3 id="idocs_hybrid">Hybrid search &amp; reranking (v2.6+)</h3>
+            <p>Pure vector search is excellent at "what is this about" and poor at "find the exact thing I named" — ask for an error code, a part number or a surname and cosine similarity returns the general topic, not the line you wanted. v2.6 adds two answers, both per-request and both off by default.</p>
+            <div class="table-responsive">
+              <table class="table table-bordered">
+                <thead>
+                  <tr><th>Mode</th><th>What it does</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td><code>vector</code></td><td>Dense embedding search — the pre-v2.6 behaviour, and the default.</td></tr>
+                  <tr><td><code>keyword</code></td><td>Classic BM25 full-text ranking over the same chunks. Provider-native: an in-memory inverted index under <code>local</code>, Postgres full-text (<code>tsvector</code> + GIN + <code>ts_rank_cd</code>) under <code>postgres</code>.</td></tr>
+                  <tr><td><code>hybrid</code></td><td>Runs both branches and fuses them by <strong>Reciprocal Rank Fusion</strong> — by rank, not by blending scores that live on different scales. The one you usually want: it recovers the exact-match case without giving up the semantic one.</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <pre><code class="bash">curl http://your-coordinator:5080/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "X-InferHub-Retrieve: handbook" \
+  -H "X-InferHub-Retrieve-Mode: hybrid" \
+  -d '{"model":"llama3","messages":[{"role":"user","content":"What does error E-4021 mean?"}]}'</code></pre>
+            <p><strong>Reranking</strong> (<code>X-InferHub-Rerank: true</code>) is an opt-in pass that hands the top candidates to a chat model already on your fleet with a scoring prompt and reorders them. It costs a round trip, so it is off unless asked, and it is hard-capped by <code>Retrieval:RerankCandidates</code> and <code>Retrieval:RerankTimeoutSeconds</code> — past the timeout the un-reranked order is kept. Nothing is retained. A dedicated cross-encoder fits behind the same seam later.</p>
+            <div class="alert alert-info" role="alert">
+              <strong>Defaults are unchanged.</strong> <code>Retrieval:Mode</code> defaults to <code>vector</code> and <code>Retrieval:Rerank</code> to <code>none</code>. A deployment that sends no headers and changes no config sees results identical to v2.5 — a feature that silently changes existing results is a regression wearing a feature's clothes.
+            </div>
+            <p>Because "hybrid improves retrieval" is an empirical claim that depends on your corpus, v2.6 ships an <strong>evaluation harness</strong> in the same release — <code>tools/InferHub.Eval</code> runs a golden set against a live coordinator in every mode and reports Recall@k, MRR, nDCG@k and latency. Its README carries the one warning that matters: a golden set generated by the same model you are about to evaluate is a mirror, not evidence. Run it on your own data — that is the only number that is about you. The admin console also gains a query playground that shows what each mode retrieves for a query, side by side.</p>
 
             <h3>The RAG mesh in one paragraph</h3>
             <p>Six phases, one arc. v1.5 laid the raw store; v1.6 closed the text loop by moving embeddings to the fleet; v1.7 replicated collections across nodes; v1.8 made that placement heal itself; v1.9 put it all on the console; v2.0 wires retrieval straight into inference. That's a local vector store the operator can back up as plain files, replicated across the GPU fleet, that heals itself when nodes come and go, and that the models themselves can read from — with a single header and zero external services.</p>
@@ -1036,7 +1070,8 @@ var doc = record.Payload.As(MyJsonContext.Default.Doc);</code></pre>
 		============================ -->
           <section id="idocs_changelog">
             <h2>Roadmap &amp; status</h2>
-            <p>InferHub <strong>2.5</strong> lets you <em>fill</em> the vector store at last. Upload a document — text, Markdown, HTML, JSON, or a PDF's text layer — and the coordinator extracts it, chunks it, embeds the chunks on your GPU fleet through the same dispatcher that serves chat, and stores them; any request carrying <code>X-InferHub-Retrieve</code> then comes back grounded, with citations down to the document and page. Three things it deliberately does <em>not</em> do: keep your file (chunks and a hash, nothing else), duplicate silently (re-ingesting replaces; identical bytes are a no-op and say so), or OCR (a scanned PDF is <strong>rejected</strong> with an error, not turned into a corpus of confident gibberish).</p>
+            <p>InferHub <strong>2.6</strong> goes after retrieval <em>quality</em>. Pure vector search is excellent at "what is this about" and poor at "find the exact thing I named", so retrieval now has three per-request modes — <code>vector</code>, <code>keyword</code> (BM25), and <code>hybrid</code>, which runs both and fuses them by rank (RRF) — plus an opt-in reranker that reuses a model already on your fleet. And because "hybrid improves retrieval" is a claim rather than a feeling, the same release ships an evaluation harness that measures it on your corpus. Defaults are unchanged: send no headers and results are identical to 2.5.</p>
+            <p>That builds on <strong>2.5</strong>, which lets you <em>fill</em> the vector store at last. Upload a document — text, Markdown, HTML, JSON, or a PDF's text layer — and the coordinator extracts it, chunks it, embeds the chunks on your GPU fleet through the same dispatcher that serves chat, and stores them; any request carrying <code>X-InferHub-Retrieve</code> then comes back grounded, with citations down to the document and page. Three things it deliberately does <em>not</em> do: keep your file (chunks and a hash, nothing else), duplicate silently (re-ingesting replaces; identical bytes are a no-op and say so), or OCR (a scanned PDF is <strong>rejected</strong> with an error, not turned into a corpus of confident gibberish).</p>
             <p>That builds on <strong>2.4</strong>, which taught the mesh to speak the OpenAI format <em>upstream</em>, not just to its clients. A node is no longer synonymous with Ollama: set <code>Backend:Type=openai</code> and it drives <strong>vLLM</strong> — continuous batching, the difference between one GPU serving four users and one serving forty — or llama.cpp's server, LM Studio, TGI, or a hosted provider. One backend implementation covers all of them, because they all landed on the same dialect. The same release adds <strong>cloud burst</strong>: when the fleet holds no node for a model, the coordinator can fall back to a configured upstream instead of returning a flat <code>404</code> — off by default, mapped models only, tagged in every response, counted on the status page, and never stored.</p>
             <p>That builds on <strong>2.3</strong>, which made the mesh reachable from the tools you already use: an <strong>OpenAI-compatible API</strong> at <code>/v1</code> alongside the Ollama endpoints, so any OpenAI SDK, LangChain app or IDE plugin can point at your own GPU pool by changing one base URL — with the same router, sticky affinity, failover and inline retrieval running underneath. It also brought <strong>published container images and a compose stack</strong>, so a coordinator is one command away instead of two terminals.</p>
             <p>That builds on <strong>2.0</strong>, which closed the RAG mesh: add <code>X-InferHub-Retrieve: &lt;collection&gt;</code> to a normal <code>/api/chat</code> or <code>/api/generate</code> call and the coordinator embeds the query on a GPU node, searches the store (node replica if available, hub-local otherwise), assembles a grounded prompt, and dispatches the generation to a node. Retrieval is opt-in per request — without the header, calls are byte-for-byte identical to v1.x. Underneath sit v1.9's console surface, v1.8's self-healing replicas, v1.7's replication push-protocol, v1.6's text-in/vectors-out loop, the v1.5 vector store, and the v1.4 base (Bearer auth, sticky + least-busy routing, live streaming, pre-stream failover, typed/validated node config, an admin API, and a live management console). On the deployment side, <strong>2.1</strong> runs a node as a native Windows service without changing the cross-platform worker, and <strong>2.2</strong> makes the vector store pluggable with <strong>PostgreSQL + pgvector</strong> as the first alternative backend.</p>
@@ -1069,10 +1104,11 @@ var doc = record.Payload.As(MyJsonContext.Default.Doc);</code></pre>
                   <tr><td>21</td><td>OpenAI-compatible API &amp; Docker distribution</td><td><code>v2.3.0</code></td></tr>
                   <tr><td>22</td><td>OpenAI-compatible node backend &amp; cloud burst</td><td><code>v2.4.0</code></td></tr>
                   <tr><td>23</td><td>Document ingestion pipeline</td><td><code>v2.5.0</code></td></tr>
+                  <tr><td>24</td><td>Hybrid search, reranking &amp; eval harness</td><td><code>v2.6.0</code></td></tr>
                 </tbody>
               </table>
             </div>
-            <p><strong>What's next.</strong> Retrieval can now be <em>filled</em> — the remaining gap is retrieval <em>quality</em>. Pure vector search is excellent at "what is this about" and poor at "find the exact thing I named": ask it for an error code, a part number or a surname and it returns five well-chosen paragraphs on the general subject and not the one line you wanted. Hybrid search (keyword and vector, fused by rank) and an opt-in reranker come next, shipped in the same release as an evaluation harness — because "hybrid search improved retrieval" is an empirical claim, and if we cannot measure it we should not write it in a blog post. After that: quotas and per-key usage accounting, then fleet-wide remote model management. Streaming <code>tool_calls</code> deltas (mapped in blocking mode today, not yet streamed), further vector backends (Qdrant, SQL Server vector) and a migration command between providers stay on the table, as do multi-coordinator clustering, persisted affinity and richer audit trails.</p>
+            <p><strong>What's next.</strong> Retrieval <em>quality</em> landed in 2.6 — hybrid search, an opt-in reranker, and a harness that measures whether either helped. The remaining arc is about turning a mesh into something you can point a paying client at: quotas and per-key usage accounting come next, then fleet-wide remote model management. Streaming <code>tool_calls</code> deltas (mapped in blocking mode today, not yet streamed), further vector backends (Qdrant, SQL Server vector) and a migration command between providers stay on the table, as do multi-coordinator clustering, persisted affinity and richer audit trails.</p>
             <p class="text-muted"><small>Made by <a href="https://devart.solutions" target="_blank">Dev Art Solutions</a>. We build production-ready AI and agent systems. Say hello: <a href="mailto:hello@devart.solutions">hello@devart.solutions</a></small></p>
           </section>
 
