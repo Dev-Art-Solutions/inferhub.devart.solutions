@@ -92,6 +92,7 @@
           <li class="nav-item"><a class="nav-link" href="#idocs_auth">Authentication</a>
             <ul class="nav flex-column">
               <li class="nav-item"><a class="nav-link" href="#idocs_tokens">Token sets</a></li>
+              <li class="nav-item"><a class="nav-link" href="#idocs_quotas">Clients, quotas &amp; usage</a></li>
               <li class="nav-item"><a class="nav-link" href="#idocs_secrets">Setting secrets</a></li>
               <li class="nav-item"><a class="nav-link" href="#idocs_loopback">Loopback policy</a></li>
             </ul>
@@ -294,7 +295,48 @@ for chunk in stream:
                 </tbody>
               </table>
             </div>
-            <p>Client and admin scopes are checked separately — an admin key cannot run inference unless it is also listed in <code>Auth:ApiKeys</code>, and vice versa.</p>
+            <p>Client and admin scopes are checked separately — an admin key cannot run inference unless it is also listed in <code>Auth:ApiKeys</code>, and vice versa. Since <strong>v2.7</strong>, entries in the flat <code>Auth:ApiKeys</code> list are <em>anonymous clients with no limits</em> — for named clients with quotas, see below.</p>
+
+            <h3 id="idocs_quotas">Clients, quotas &amp; usage (v2.7+)</h3>
+            <p>A flat key list is fine until a second party is behind one of the keys. <code>Auth:Clients</code> gives a key an identity and, optionally, limits — every limit is nullable, and <code>null</code> means unlimited:</p>
+            <pre><code class="json">{
+  "Auth": {
+    "Clients": [
+      {
+        "Id": "acme-marketing",
+        "Limits": {
+          "MaxConcurrent": 4,
+          "RequestsPerMinute": 60,
+          "TokensPerMinute": 100000,
+          "TokensPerDay": 2000000,
+          "AllowedModels": ["llama3", "nomic-embed-text"]
+        }
+      }
+    ]
+  }
+}</code></pre>
+            <p>The key itself comes from env (<code>Auth__Clients__0__Key=sk-...</code>) or user-secrets — never a config file. A duplicate key across two clients fails startup, because attribution must never depend on list order.</p>
+            <p>What happens at the boundary, per status code:</p>
+            <div class="table-responsive">
+              <table class="table table-bordered">
+                <thead>
+                  <tr><th>Situation</th><th>Response</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td>Over <code>MaxConcurrent</code>, <code>RequestsPerMinute</code> or <code>TokensPerMinute</code></td><td><code>429</code> with a window-accurate <code>Retry-After</code></td></tr>
+                  <tr><td>Over <code>TokensPerDay</code></td><td><code>402 Payment Required</code>, <code>Retry-After</code> pointing at UTC midnight</td></tr>
+                  <tr><td>Model outside <code>AllowedModels</code></td><td><code>404</code>, byte-identical to a model that does not exist</td></tr>
+                  <tr><td>Every capable node at its declared cap, longer than <code>Queue:MaxWaitSeconds</code></td><td><code>503</code> with <code>Retry-After</code></td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p>On <code>/v1</code> these use the OpenAI error envelope (<code>rate_limit_exceeded</code>, <code>insufficient_quota</code>), so SDK retry logic works out of the box.</p>
+            <p><strong>Usage accounting.</strong> Every completed request is metered per client and per model — requests, prompt tokens, completion tokens, and whether it was served by cloud burst. Embeddings and document ingestion count too. Aggregates via <code>GET /api/admin/usage?from&amp;to&amp;clientId&amp;model</code>, live window consumption via <code>GET /api/admin/clients</code>, and a <em>Clients &amp; usage</em> console panel with CSV export.</p>
+            <div class="alert alert-info">
+              <strong>What a usage record contains:</strong> a client id, a model name, a kind, two integers, a fallback flag and a timestamp. <strong>What it never contains:</strong> the prompt, the completion, a hash of either, or a "representative sample" — and there is no configuration flag to change that, because a flag is an invitation. Streaming counts come from the terminal chunk; a stream that never delivers it records nothing rather than guessing.
+            </div>
+            <p>Counters are in-memory by default and a restart resets them. Set <code>Usage:Persistence=postgres</code> — with its own connection string, deliberately independent of the vector store's — to write each record to an append-only table.</p>
+            <p><strong>Queueing.</strong> When every node holding a model is at its declared <code>MaxConcurrency</code>, a request waits in a bounded queue instead of failing instantly: up to <code>Queue:MaxWaitSeconds</code> (default 30), at most <code>Queue:MaxDepth</code> waiting (default 64), then <code>503</code>. Nodes that declared no cap never queue. With cloud burst on <code>no-node-or-saturated</code>, saturation overflows to the upstream <em>instead of</em> queueing. Queue depth and median wait are on <code>/api/status</code> and the status page.</p>
 
             <h3 id="idocs_secrets">Setting secrets</h3>
             <p>Coordinator — client, admin &amp; enrollment secrets:</p>
@@ -344,7 +386,8 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
                   <tr><td><code>Dispatcher:TimeoutSeconds</code></td><td><code>300</code></td><td>Per-job wall-clock timeout (applies to streaming and blocking).</td></tr>
                   <tr><td><code>Router:AffinitySlidingMinutes</code></td><td><code>10</code></td><td>Sticky-conversation idle expiry.</td></tr>
                   <tr><td><code>Router:AffinityLoadBreakThreshold</code></td><td><code>2</code></td><td>Extra in-flight jobs the sticky node may have before affinity is broken in favour of a less-busy node.</td></tr>
-                  <tr><td><code>Auth:ApiKeys</code></td><td><code>[]</code></td><td>Accepted client Bearer tokens (constant-time compared).</td></tr>
+                  <tr><td><code>Auth:ApiKeys</code></td><td><code>[]</code></td><td>Accepted client Bearer tokens (constant-time compared). Anonymous, unlimited.</td></tr>
+                  <tr><td><code>Auth:Clients</code></td><td><code>[]</code></td><td><strong>v2.7+</strong> — named clients: <code>{Id, Key, Limits}</code>. See <a href="#idocs_quotas">Clients, quotas &amp; usage</a>.</td></tr>
                   <tr><td><code>Auth:AdminApiKeys</code></td><td><code>[]</code></td><td>Accepted admin Bearer tokens guarding <code>/api/admin/*</code>. Separate from <code>ApiKeys</code>.</td></tr>
                   <tr><td><code>Auth:RequireAuthForLoopback</code></td><td><code>false</code></td><td>Force loopback callers to present a token too (applies to client and admin scopes).</td></tr>
                   <tr><td><code>Auth:NodeEnrollmentSecret</code></td><td><em>(empty)</em></td><td>Shared secret nodes present when joining the hub. Empty disables enrollment.</td></tr>
@@ -355,6 +398,11 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
                   <tr><td><code>Fallback:ModelMap</code></td><td><code>{}</code></td><td><strong>v2.4+</strong> — local model name → upstream model name. <strong>Only mapped models are ever sent upstream.</strong></td></tr>
                   <tr><td><code>Fallback:AllowedModels</code></td><td><code>[]</code></td><td><strong>v2.4+</strong> — narrower allowlist within the map. Empty = every mapped model.</td></tr>
                   <tr><td><code>Fallback:TimeoutSeconds</code></td><td><code>300</code></td><td><strong>v2.4+</strong> — per-request timeout against the upstream.</td></tr>
+                  <tr><td><code>Queue:MaxWaitSeconds</code></td><td><code>30</code></td><td><strong>v2.7+</strong> — how long a request may wait for a saturated fleet before <code>503</code>.</td></tr>
+                  <tr><td><code>Queue:MaxDepth</code></td><td><code>64</code></td><td><strong>v2.7+</strong> — how many requests may wait at once. Past it, an immediate <code>503</code>.</td></tr>
+                  <tr><td><code>Usage:Persistence</code></td><td><code>none</code></td><td><strong>v2.7+</strong> — <code>none</code> (in-memory, reset on restart) or <code>postgres</code> (append-only ledger).</td></tr>
+                  <tr><td><code>Usage:Postgres:ConnectionString</code></td><td><em>(empty)</em></td><td><strong>v2.7+</strong> — <strong>required</strong> when <code>Persistence=postgres</code>. Env (<code>Usage__Postgres__ConnectionString</code>) or user-secrets only. Deliberately independent of the vector store's.</td></tr>
+                  <tr><td><code>Usage:Postgres:Schema</code> / <code>:Table</code></td><td><code>inferhub</code> / <code>usage_records</code></td><td><strong>v2.7+</strong> — where the ledger lives. Created on first use.</td></tr>
                   <tr><td><code>Ingestion:*</code></td><td>—</td><td><strong>v2.5+</strong> — document ingestion. Inert unless <code>VectorStore:Enabled</code>. Keys and defaults under <a href="#idocs_ingestion">Document ingestion</a>.</td></tr>
                   <tr><td><code>VectorStore:Enabled</code></td><td><code>false</code></td><td>Master switch for the vector store (phase 13+). Off = no persisted state, original v1.4 contract.</td></tr>
                   <tr><td><code>VectorStore:Provider</code></td><td><code>local</code></td><td><strong>v2.2+</strong> — storage backend: <code>local</code> (file-backed, replicated) | <code>postgres</code> (external pgvector).</td></tr>
@@ -1070,7 +1118,8 @@ var doc = record.Payload.As(MyJsonContext.Default.Doc);</code></pre>
 		============================ -->
           <section id="idocs_changelog">
             <h2>Roadmap &amp; status</h2>
-            <p>InferHub <strong>2.6</strong> goes after retrieval <em>quality</em>. Pure vector search is excellent at "what is this about" and poor at "find the exact thing I named", so retrieval now has three per-request modes — <code>vector</code>, <code>keyword</code> (BM25), and <code>hybrid</code>, which runs both and fuses them by rank (RRF) — plus an opt-in reranker that reuses a model already on your fleet. And because "hybrid improves retrieval" is a claim rather than a feeling, the same release ships an evaluation harness that measures it on your corpus. Defaults are unchanged: send no headers and results are identical to 2.5.</p>
+            <p>InferHub <strong>2.7</strong> gives an API key a name, a budget, and a bill. <code>Auth:Clients</code> turns a flat list of anonymous keys into named clients with per-key concurrency, rate and token limits and a model allowlist; every completed request is metered per client and per model — counts, never text — queryable from the admin API, visible on the console, exportable as CSV, and optionally persisted to Postgres. Over a limit is a <code>429</code> with <code>Retry-After</code>; over the daily budget a <code>402</code>; a fleet at capacity queues briefly, with a real bound, then says <code>503</code>. Existing configs run unchanged. See <a href="#idocs_quotas">Clients, quotas &amp; usage</a>.</p>
+            <p>That builds on <strong>2.6</strong>, which goes after retrieval <em>quality</em>. Pure vector search is excellent at "what is this about" and poor at "find the exact thing I named", so retrieval now has three per-request modes — <code>vector</code>, <code>keyword</code> (BM25), and <code>hybrid</code>, which runs both and fuses them by rank (RRF) — plus an opt-in reranker that reuses a model already on your fleet. And because "hybrid improves retrieval" is a claim rather than a feeling, the same release ships an evaluation harness that measures it on your corpus. Defaults are unchanged: send no headers and results are identical to 2.5.</p>
             <p>That builds on <strong>2.5</strong>, which lets you <em>fill</em> the vector store at last. Upload a document — text, Markdown, HTML, JSON, or a PDF's text layer — and the coordinator extracts it, chunks it, embeds the chunks on your GPU fleet through the same dispatcher that serves chat, and stores them; any request carrying <code>X-InferHub-Retrieve</code> then comes back grounded, with citations down to the document and page. Three things it deliberately does <em>not</em> do: keep your file (chunks and a hash, nothing else), duplicate silently (re-ingesting replaces; identical bytes are a no-op and say so), or OCR (a scanned PDF is <strong>rejected</strong> with an error, not turned into a corpus of confident gibberish).</p>
             <p>That builds on <strong>2.4</strong>, which taught the mesh to speak the OpenAI format <em>upstream</em>, not just to its clients. A node is no longer synonymous with Ollama: set <code>Backend:Type=openai</code> and it drives <strong>vLLM</strong> — continuous batching, the difference between one GPU serving four users and one serving forty — or llama.cpp's server, LM Studio, TGI, or a hosted provider. One backend implementation covers all of them, because they all landed on the same dialect. The same release adds <strong>cloud burst</strong>: when the fleet holds no node for a model, the coordinator can fall back to a configured upstream instead of returning a flat <code>404</code> — off by default, mapped models only, tagged in every response, counted on the status page, and never stored.</p>
             <p>That builds on <strong>2.3</strong>, which made the mesh reachable from the tools you already use: an <strong>OpenAI-compatible API</strong> at <code>/v1</code> alongside the Ollama endpoints, so any OpenAI SDK, LangChain app or IDE plugin can point at your own GPU pool by changing one base URL — with the same router, sticky affinity, failover and inline retrieval running underneath. It also brought <strong>published container images and a compose stack</strong>, so a coordinator is one command away instead of two terminals.</p>
@@ -1105,10 +1154,11 @@ var doc = record.Payload.As(MyJsonContext.Default.Doc);</code></pre>
                   <tr><td>22</td><td>OpenAI-compatible node backend &amp; cloud burst</td><td><code>v2.4.0</code></td></tr>
                   <tr><td>23</td><td>Document ingestion pipeline</td><td><code>v2.5.0</code></td></tr>
                   <tr><td>24</td><td>Hybrid search, reranking &amp; eval harness</td><td><code>v2.6.0</code></td></tr>
+                  <tr><td>25</td><td>Clients, quotas &amp; usage accounting</td><td><code>v2.7.0</code></td></tr>
                 </tbody>
               </table>
             </div>
-            <p><strong>What's next.</strong> Retrieval <em>quality</em> landed in 2.6 — hybrid search, an opt-in reranker, and a harness that measures whether either helped. The remaining arc is about turning a mesh into something you can point a paying client at: quotas and per-key usage accounting come next, then fleet-wide remote model management. Streaming <code>tool_calls</code> deltas (mapped in blocking mode today, not yet streamed), further vector backends (Qdrant, SQL Server vector) and a migration command between providers stay on the table, as do multi-coordinator clustering, persisted affinity and richer audit trails.</p>
+            <p><strong>What's next.</strong> With per-key metering in 2.7 — named clients, quotas, a bill that never contains a prompt — a hub is safe to point a paying client at. Next: fleet operations — remote model management (pull / delete / warm from the console, no SSH) and measured, throughput-aware routing. Streaming <code>tool_calls</code> deltas (mapped in blocking mode today, not yet streamed), further vector backends (Qdrant, SQL Server vector) and a migration command between providers stay on the table, as do multi-coordinator clustering, persisted affinity and richer audit trails.</p>
             <p class="text-muted"><small>Made by <a href="https://devart.solutions" target="_blank">Dev Art Solutions</a>. We build production-ready AI and agent systems. Say hello: <a href="mailto:hello@devart.solutions">hello@devart.solutions</a></small></p>
           </section>
 
