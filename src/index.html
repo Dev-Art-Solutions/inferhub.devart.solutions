@@ -111,6 +111,7 @@
           <li class="nav-item"><a class="nav-link" href="#idocs_windows_service">Windows service</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_docker">Docker</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_status">Status &amp; observability</a></li>
+          <li class="nav-item"><a class="nav-link" href="#idocs_metrics">Prometheus metrics</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_console">Management console</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_fleet_ops">Fleet operations</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_vector">Vector store</a>
@@ -640,6 +641,49 @@ ghcr.io/dev-art-solutions/inferhub-node:2.3.0</code></pre>
 
           <hr class="divider">
 
+          <!-- Prometheus metrics
+		============================ -->
+          <section id="idocs_metrics">
+            <h2>Prometheus <code>/metrics</code> <span class="badge bg-secondary">v2.10+</span></h2>
+            <p>Everything above is a <em>snapshot</em>. From <strong>v2.10</strong>, <code>GET /metrics</code> serves the Prometheus text exposition format, so the numbers the mesh already measured get a history, a graph and an alert.</p>
+            <p>It <strong>measures nothing new</strong> — every series already existed in the coordinator's counters, the throughput tracker, the request queue and the admission windows. Nothing was added to the request path, and <code>/api/status</code> is unchanged: this adds a surface, it does not migrate one.</p>
+            <pre><code class="bash">curl -H "Authorization: Bearer $INFERHUB_ADMIN_KEY" http://localhost:5080/metrics</code></pre>
+            <pre><code># HELP inferhub_node_tokens_per_second Measured decayed tokens/second per node and model (EWMA).
+# TYPE inferhub_node_tokens_per_second gauge
+inferhub_node_tokens_per_second{node="gpu-1",model="llama3"} 42.5</code></pre>
+
+            <h3>What is exposed</h3>
+            <p>All namespaced <code>inferhub_*</code>:</p>
+            <ul>
+              <li><strong>Fleet</strong> — requests total / in-flight / completed / failed, failovers, evictions, OpenAI-surface requests, uptime, <code>build_info{version}</code>.</li>
+              <li><strong>Cloud burst</strong> — <code>fallback_dispatched_total</code> and <code>fallback_last_model{model}</code>.</li>
+              <li><strong>Per node</strong> (<code>node=</code>) — up, cordoned, models, local in-flight, heartbeat age, routed request counters, and <code>node_tokens_per_second{node,model}</code>.</li>
+              <li><strong>Vector &amp; retrieval</strong> (<code>collection=</code>) — replicas healed, rebuilds, under-replicated, plus per-collection queries, latency, documents, chunks and ingestion failures.</li>
+              <li><strong>Queue</strong> — depth, queued / admitted / timed-out / rejected, median wait.</li>
+              <li><strong>Named clients</strong> (<code>client=</code>) — live request and token windows against each configured limit.</li>
+            </ul>
+
+            <h3>It uses the admin key, not a client key</h3>
+            <p><code>/metrics</code> is operational like <code>/health</code> — but unlike <code>/health</code> it exposes node names, model names, client ids and the shape of your traffic. So it sits behind <code>Auth:AdminApiKeys</code> by default and is deliberately <em>not</em> under the bearer inference guard: a scraper is not a client, and handing a monitoring system a token that can spend GPU time would be the wrong trade.</p>
+            <p>On a trusted network, <code>Metrics:OpenScrape=true</code> drops the guard on <strong>this one endpoint</strong>. It never opens <code>/api/admin/*</code>.</p>
+            <p>The per-client series come from the in-memory admission windows — counts only. There is no prompt or completion text anywhere in the usage path, and the append-only usage ledger is never read to drive anything.</p>
+
+            <h3>Absence is a fact, so absence is what you get</h3>
+            <p>An unmeasured node/model pair has <strong>no</strong> <code>node_tokens_per_second</code> series rather than a zero. The router treats an unmeasured node as <em>average</em>, never as slow — a <code>0</code> on a dashboard would be a lie that pages someone about a node nobody has asked anything yet. Same for a client limit that is unset (unlimited is the absence of a series, not a <code>0</code> and not a <code>-1</code> sentinel a graph would happily plot). The fleet counters are the opposite and are always present at zero, where a zero is a statement rather than an absence.</p>
+
+            <h3>Prometheus + Grafana in one command</h3>
+            <p>An optional overlay ships in <code>deploy/docker/</code>, with a provisioned datasource and an <strong>InferHub mesh</strong> dashboard: fleet in-flight, nodes connected, request rate by outcome, tokens/second per node and model, queue depth and outcomes, retrieval latency per collection, and per-client token consumption.</p>
+            <pre><code class="bash"># Give Prometheus the admin key in a file, so it never lands in a config you might paste.
+echo -n "$INFERHUB_ADMIN_KEY" &gt; deploy/docker/observability/inferhub-key
+
+docker compose -f deploy/docker/docker-compose.yml \
+               -f deploy/docker/compose.observability.yml up -d</code></pre>
+            <p>Grafana on <code>:3000</code>, Prometheus on <code>:9090</code>. It stays an <em>overlay</em> on purpose — the base stack is still two services, and nobody who just wants a mesh should have to run a monitoring stack to get one.</p>
+            <p>The exposition format is written by hand, the same way the NDJSON and SSE framing is: it is <code># HELP</code> / <code># TYPE</code> / <code>name{labels} value</code>. <strong>Zero new dependencies.</strong></p>
+          </section>
+
+          <hr class="divider">
+
           <!-- Console
 		============================ -->
           <section id="idocs_console">
@@ -1162,7 +1206,8 @@ var doc = record.Payload.As(MyJsonContext.Default.Doc);</code></pre>
 		============================ -->
           <section id="idocs_changelog">
             <h2>Roadmap &amp; status</h2>
-            <p>InferHub <strong>2.9</strong> finishes tool calling on the OpenAI-compatible surface. Function calls were mapped in blocking mode only; now they stream too, as proper <code>delta.tool_calls</code> frames — so a streaming agent loop (the OpenAI SDK, LangChain, LlamaIndex) gets the call the moment it lands rather than a bare <code>finish_reason</code> with nothing attached. The whole call arrives in one delta and the terminal frame resolves <code>finish_reason: tool_calls</code>; we do not fabricate OpenAI-style argument-fragment streaming that Ollama never sent. Text-only streaming is byte-identical to before, the node protocol is unchanged, and the full call → tool-result → answer loop was verified live against a real GPU node. See <a href="#idocs_openai">OpenAI-compatible API</a>.</p>
+            <p>InferHub <strong>2.10</strong> gives the mesh a scrape endpoint. Everything it measured was in-memory and readable only as a status snapshot; now <code>GET /metrics</code> serves the Prometheus text exposition format — fleet in-flight, measured tokens/second per node and model, queue depth and outcomes, retrieval latency per collection, per-client token windows — so those numbers get a history, a graph and an alert. A Prometheus + Grafana overlay with a starter dashboard ships in <code>deploy/docker/</code>. It measures nothing new and <code>/api/status</code> is unchanged; the endpoint is admin-key-guarded by default, because unlike <code>/health</code> it exposes node names and traffic shape. The exposition format is written by hand, so it is still <strong>zero new dependencies</strong>. See <a href="#idocs_metrics">Prometheus <code>/metrics</code></a>.</p>
+            <p>That builds on <strong>2.9</strong>, which finishes tool calling on the OpenAI-compatible surface. Function calls were mapped in blocking mode only; now they stream too, as proper <code>delta.tool_calls</code> frames — so a streaming agent loop (the OpenAI SDK, LangChain, LlamaIndex) gets the call the moment it lands rather than a bare <code>finish_reason</code> with nothing attached. The whole call arrives in one delta and the terminal frame resolves <code>finish_reason: tool_calls</code>; we do not fabricate OpenAI-style argument-fragment streaming that Ollama never sent. Text-only streaming is byte-identical to before, the node protocol is unchanged, and the full call → tool-result → answer loop was verified live against a real GPU node. See <a href="#idocs_openai">OpenAI-compatible API</a>.</p>
             <p>That builds on <strong>2.8</strong>, which makes a mixed fleet pleasant to run. The coordinator can finally <em>act</em> on the fleet's models — pull, delete and warm from the console or admin API, with a progress bar, over the connection each node already holds open (no inbound port), plus an <code>ensure?replicas=N</code> placement call and a fleet-wide model matrix. And the router stops pretending a 4090 and a laptop are the same node: opt-in <code>Router:Strategy=throughput</code> ranks nodes by measured tokens/second — an EWMA computed from data every job already reported — while an unmeasured node is treated as average, never starved, and sticky affinity still wins. The default routing is unchanged, bit for bit. See <a href="#idocs_fleet_ops">Fleet operations</a>.</p>
             <p>That builds on <strong>2.7</strong>, which gives an API key a name, a budget, and a bill. <code>Auth:Clients</code> turns a flat list of anonymous keys into named clients with per-key concurrency, rate and token limits and a model allowlist; every completed request is metered per client and per model — counts, never text — queryable from the admin API, visible on the console, exportable as CSV, and optionally persisted to Postgres. Over a limit is a <code>429</code> with <code>Retry-After</code>; over the daily budget a <code>402</code>; a fleet at capacity queues briefly, with a real bound, then says <code>503</code>. Existing configs run unchanged. See <a href="#idocs_quotas">Clients, quotas &amp; usage</a>.</p>
             <p>That builds on <strong>2.6</strong>, which goes after retrieval <em>quality</em>. Pure vector search is excellent at "what is this about" and poor at "find the exact thing I named", so retrieval now has three per-request modes — <code>vector</code>, <code>keyword</code> (BM25), and <code>hybrid</code>, which runs both and fuses them by rank (RRF) — plus an opt-in reranker that reuses a model already on your fleet. And because "hybrid improves retrieval" is a claim rather than a feeling, the same release ships an evaluation harness that measures it on your corpus. Defaults are unchanged: send no headers and results are identical to 2.5.</p>
@@ -1203,10 +1248,11 @@ var doc = record.Payload.As(MyJsonContext.Default.Doc);</code></pre>
                   <tr><td>25</td><td>Clients, quotas &amp; usage accounting</td><td><code>v2.7.0</code></td></tr>
                   <tr><td>26</td><td>Fleet operations &amp; measured routing</td><td><code>v2.8.0</code></td></tr>
                   <tr><td>27</td><td>Streaming <code>tool_calls</code> deltas</td><td><code>v2.9.0</code></td></tr>
+                  <tr><td>28</td><td>Observability export — Prometheus <code>/metrics</code></td><td><code>v2.10.0</code></td></tr>
                 </tbody>
               </table>
             </div>
-            <p><strong>What's next.</strong> 2.9 finishes tool calling on the OpenAI surface: function calls now stream as proper <code>delta.tool_calls</code> frames, so a streaming agent loop gets the call the moment it lands rather than a bare <code>finish_reason</code>. Further vector backends (Qdrant, SQL Server vector) and a migration command between providers stay on the table, as do multi-coordinator clustering, persisted affinity, Prometheus <code>/metrics</code>, multimodal passthrough and richer audit trails.</p>
+            <p><strong>What's next.</strong> 2.10 makes the mesh scrapeable: <code>/metrics</code> in the Prometheus exposition format, plus a Grafana overlay in <code>deploy/docker/</code>. Multimodal (vision) passthrough, persisted stable-node affinity, client-scoped collections for multi-tenant RAG, and multi-coordinator clustering are next. Further vector backends (Qdrant, SQL Server vector), a migration command between providers, and richer audit trails stay on the table.</p>
             <p class="text-muted"><small>Made by <a href="https://devart.solutions" target="_blank">Dev Art Solutions</a>. We build production-ready AI and agent systems. Say hello: <a href="mailto:hello@devart.solutions">hello@devart.solutions</a></small></p>
           </section>
 
