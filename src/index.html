@@ -89,6 +89,7 @@
           </li>
           <li class="nav-item"><a class="nav-link" href="#idocs_quickstart">Quick Start</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_openai">OpenAI-compatible API</a></li>
+          <li class="nav-item"><a class="nav-link" href="#idocs_vision">Vision</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_auth">Authentication</a>
             <ul class="nav flex-column">
               <li class="nav-item"><a class="nav-link" href="#idocs_tokens">Token sets</a></li>
@@ -269,11 +270,40 @@ for chunk in stream:
                 <li><code>n &gt; 1</code> is <strong>rejected</strong> with a <code>400</code>, not quietly served once.</li>
                 <li>Tool calls are mapped in <strong>both blocking and streaming</strong> modes (since 2.9). A streamed call arrives as one <code>delta.tool_calls</code> frame with <code>index: 0</code> and the terminal frame resolves <code>finish_reason: tool_calls</code> — Ollama emits the whole call at once, so we do not fake OpenAI-style argument-fragment streaming it never produced. The full loop (streamed call → tool result → grounded answer) works with the SDK's string-form arguments.</li>
                 <li><code>logprobs</code>, <code>logit_bias</code> and <code>user</code> are accepted and <strong>ignored</strong>.</li>
-                <li>Image and other multimodal content parts are <strong>rejected</strong>, not silently dropped — a model should never answer confidently about an image it was never sent.</li>
+                <li>Audio and video content parts are <strong>rejected</strong>, not silently dropped — a model should never answer confidently about something it was never sent. Images are forwarded since 2.11; see <a href="#idocs_vision">Vision</a>.</li>
               </ul>
             </div>
 
-            <p>Errors on <code>/v1/*</code> use the OpenAI envelope (<code>{"error": {"message", "type", "param", "code"}}</code>), because an SDK reads <code>error.message</code> and would otherwise surface a useless "unknown error".</p>
+            <p>Errors on <code>/v1/*</code> use the OpenAI envelope (<code>{"error": {"message", "type", "param", "code"}}</code>), because an SDK reads <code>error.message</code> and would otherwise surface a useless "unknown error". Since 2.11 a node's refusal is unwrapped to its innermost sentence before it lands there — Ollama encodes its own backend's JSON error as a string inside its <code>error</code> field, so without that a client read a wall of backslashes instead of the line saying what to fix.</p>
+          </section>
+
+          <hr class="divider">
+
+          <!-- Vision
+		============================ -->
+          <section id="idocs_vision">
+            <h2>Vision <span class="badge bg-secondary align-middle">v2.11+</span></h2>
+            <p class="lead">Send an image the way the OpenAI SDK already does, and it reaches whichever GPU in the fleet is holding a vision model.</p>
+            <p>Ollama serves a whole class of vision models — <code>llava</code>, <code>llama3.2-vision</code>, <code>qwen2-vl</code>, <code>moondream</code> — and the coordinator now translates OpenAI's <code>image_url</code> content parts into the base64 <code>images</code> array Ollama expects. It is a boundary translation like every other dialect mapping; the node protocol did not change.</p>
+
+            <pre><code class="python">client.chat.completions.create(
+    model="llava",
+    messages=[{"role": "user", "content": [
+        {"type": "text", "text": "What is in this image?"},
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+    ]}],
+)</code></pre>
+
+            <p>Blocking and streaming both work, and so does routing: the same least-busy router, the same sticky affinity, the same pre-stream failover. A vision request also survives the trip to an OpenAI-backed node (vLLM, LM Studio, TGI, a hosted provider) — the image is re-emitted as a data URL on the way upstream, with its media type sniffed from the magic bytes rather than guessed.</p>
+
+            <div class="alert alert-warning" role="alert">
+              <strong>The image must be inlined as a <code>data:</code> URL.</strong>
+              <p class="mb-0">A remote <code>http(s)</code> image URL is rejected with a <code>400</code> that says why, and that is deliberate. Fetching a caller-supplied URL would make the coordinator issue outbound requests to arbitrary hosts — an SSRF surface — and would pull third-party bytes through a hop whose whole design is to retain nothing. Every OpenAI SDK can inline a file in one line; the coordinator is not going to be a fetcher.</p>
+            </div>
+
+            <p>Two more refusals, for the same reason the rest of InferHub is loud rather than convenient. Malformed base64 fails in the translator, not seconds later from behind routing and a GPU queue. And an image format the coordinator does not recognise fails clean instead of being mislabelled — calling non-PNG bytes <code>image/png</code> would turn a detectable error into a bad model answer, which is far harder to notice.</p>
+
+            <p>Images pass through in flight, exactly like text: nothing is stored, nothing is logged, and usage stays counts-only — an image contributes to the prompt tokens the node itself reports, and we do not measure pixels. A text-only model handed an image refuses at the node, and that refusal is forwarded as-is; there is no capability registry here, because Ollama is the source of truth for what a model accepts and a second list would drift and start lying.</p>
           </section>
 
           <hr class="divider">
@@ -1206,7 +1236,8 @@ var doc = record.Payload.As(MyJsonContext.Default.Doc);</code></pre>
 		============================ -->
           <section id="idocs_changelog">
             <h2>Roadmap &amp; status</h2>
-            <p>InferHub <strong>2.10</strong> gives the mesh a scrape endpoint. Everything it measured was in-memory and readable only as a status snapshot; now <code>GET /metrics</code> serves the Prometheus text exposition format — fleet in-flight, measured tokens/second per node and model, queue depth and outcomes, retrieval latency per collection, per-client token windows — so those numbers get a history, a graph and an alert. A Prometheus + Grafana overlay with a starter dashboard ships in <code>deploy/docker/</code>. It measures nothing new and <code>/api/status</code> is unchanged; the endpoint is admin-key-guarded by default, because unlike <code>/health</code> it exposes node names and traffic shape. The exposition format is written by hand, so it is still <strong>zero new dependencies</strong>. See <a href="#idocs_metrics">Prometheus <code>/metrics</code></a>.</p>
+            <p>InferHub <strong>2.11</strong> sees images. The OpenAI-compatible surface used to reject image content parts outright, which locked out the whole vision-model class Ollama already serves — <code>llava</code>, <code>llama3.2-vision</code>, <code>qwen2-vl</code>, <code>moondream</code>. Send a base64 image the way the OpenAI SDK does and it now reaches whichever GPU in the fleet can read it, blocking or streaming, and through an OpenAI-backed node too. It will not fetch a remote <code>http</code> image URL — that would make the coordinator issue outbound requests to caller-supplied hosts — and it will not guess a media type it cannot recognise, because mislabelling bytes turns a detectable error into a bad model answer. Nothing about the image is stored or logged, usage stays counts-only, and text-only requests are byte-identical to 2.10. Still <strong>zero new dependencies</strong>. See <a href="#idocs_vision">Vision</a>.</p>
+            <p>That builds on <strong>2.10</strong>, which gives the mesh a scrape endpoint. Everything it measured was in-memory and readable only as a status snapshot; now <code>GET /metrics</code> serves the Prometheus text exposition format — fleet in-flight, measured tokens/second per node and model, queue depth and outcomes, retrieval latency per collection, per-client token windows — so those numbers get a history, a graph and an alert. A Prometheus + Grafana overlay with a starter dashboard ships in <code>deploy/docker/</code>. It measures nothing new and <code>/api/status</code> is unchanged; the endpoint is admin-key-guarded by default, because unlike <code>/health</code> it exposes node names and traffic shape. The exposition format is written by hand, so it is still <strong>zero new dependencies</strong>. See <a href="#idocs_metrics">Prometheus <code>/metrics</code></a>.</p>
             <p>That builds on <strong>2.9</strong>, which finishes tool calling on the OpenAI-compatible surface. Function calls were mapped in blocking mode only; now they stream too, as proper <code>delta.tool_calls</code> frames — so a streaming agent loop (the OpenAI SDK, LangChain, LlamaIndex) gets the call the moment it lands rather than a bare <code>finish_reason</code> with nothing attached. The whole call arrives in one delta and the terminal frame resolves <code>finish_reason: tool_calls</code>; we do not fabricate OpenAI-style argument-fragment streaming that Ollama never sent. Text-only streaming is byte-identical to before, the node protocol is unchanged, and the full call → tool-result → answer loop was verified live against a real GPU node. See <a href="#idocs_openai">OpenAI-compatible API</a>.</p>
             <p>That builds on <strong>2.8</strong>, which makes a mixed fleet pleasant to run. The coordinator can finally <em>act</em> on the fleet's models — pull, delete and warm from the console or admin API, with a progress bar, over the connection each node already holds open (no inbound port), plus an <code>ensure?replicas=N</code> placement call and a fleet-wide model matrix. And the router stops pretending a 4090 and a laptop are the same node: opt-in <code>Router:Strategy=throughput</code> ranks nodes by measured tokens/second — an EWMA computed from data every job already reported — while an unmeasured node is treated as average, never starved, and sticky affinity still wins. The default routing is unchanged, bit for bit. See <a href="#idocs_fleet_ops">Fleet operations</a>.</p>
             <p>That builds on <strong>2.7</strong>, which gives an API key a name, a budget, and a bill. <code>Auth:Clients</code> turns a flat list of anonymous keys into named clients with per-key concurrency, rate and token limits and a model allowlist; every completed request is metered per client and per model — counts, never text — queryable from the admin API, visible on the console, exportable as CSV, and optionally persisted to Postgres. Over a limit is a <code>429</code> with <code>Retry-After</code>; over the daily budget a <code>402</code>; a fleet at capacity queues briefly, with a real bound, then says <code>503</code>. Existing configs run unchanged. See <a href="#idocs_quotas">Clients, quotas &amp; usage</a>.</p>
@@ -1249,10 +1280,11 @@ var doc = record.Payload.As(MyJsonContext.Default.Doc);</code></pre>
                   <tr><td>26</td><td>Fleet operations &amp; measured routing</td><td><code>v2.8.0</code></td></tr>
                   <tr><td>27</td><td>Streaming <code>tool_calls</code> deltas</td><td><code>v2.9.0</code></td></tr>
                   <tr><td>28</td><td>Observability export — Prometheus <code>/metrics</code></td><td><code>v2.10.0</code></td></tr>
+                  <tr><td>29</td><td>Multimodal (vision) passthrough</td><td><code>v2.11.0</code></td></tr>
                 </tbody>
               </table>
             </div>
-            <p><strong>What's next.</strong> 2.10 makes the mesh scrapeable: <code>/metrics</code> in the Prometheus exposition format, plus a Grafana overlay in <code>deploy/docker/</code>. Multimodal (vision) passthrough, persisted stable-node affinity, client-scoped collections for multi-tenant RAG, and multi-coordinator clustering are next. Further vector backends (Qdrant, SQL Server vector), a migration command between providers, and richer audit trails stay on the table.</p>
+            <p><strong>What's next.</strong> 2.11 gives the mesh vision: base64 images on the <code>/v1</code> surface reach your vision models, with no remote fetching and nothing retained. Persisted stable-node affinity, client-scoped collections for multi-tenant RAG, and multi-coordinator clustering are next. Further vector backends (Qdrant, SQL Server vector), a migration command between providers, and richer audit trails stay on the table.</p>
             <p class="text-muted"><small>Made by <a href="https://devart.solutions" target="_blank">Dev Art Solutions</a>. We build production-ready AI and agent systems. Say hello: <a href="mailto:hello@devart.solutions">hello@devart.solutions</a></small></p>
           </section>
 
