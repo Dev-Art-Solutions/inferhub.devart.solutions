@@ -124,7 +124,11 @@
               <li class="nav-item"><a class="nav-link" href="#idocs_tenancy">Multi-tenant collections</a></li>
             </ul>
           </li>
-          <li class="nav-item"><a class="nav-link" href="#idocs_resilience">Resilience &amp; failover</a></li>
+          <li class="nav-item"><a class="nav-link" href="#idocs_resilience">Resilience &amp; failover</a>
+            <ul class="nav flex-column">
+              <li class="nav-item"><a class="nav-link" href="#idocs_ha">High availability</a></li>
+            </ul>
+          </li>
           <li class="nav-item"><a class="nav-link" href="#idocs_conversations">Conversations &amp; routing</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_csharp_client">C# client</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_builtwith">Built with</a></li>
@@ -470,6 +474,12 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
                   <tr><td><code>VectorStore:Postgres:EfSearch</code></td><td><code>40</code></td><td><strong>v2.2+</strong> — per-query <code>hnsw.ef_search</code> (higher = better recall, slower).</td></tr>
                   <tr><td><code>VectorStore:Postgres:CommandTimeoutSeconds</code></td><td><code>30</code></td><td><strong>v2.2+</strong> — Npgsql command timeout.</td></tr>
                   <tr><td><code>VectorStore:Postgres:MaxPoolSize</code></td><td><code>20</code></td><td><strong>v2.2+</strong> — max pool size, applied if the connection string doesn't set one.</td></tr>
+                  <tr><td><code>Cluster:Enabled</code></td><td><code>false</code></td><td><strong>v3.0+</strong> — warm-standby HA. Off = byte-identical to v2.13. Needs <code>VectorStore:Provider=postgres</code>. See <a href="#idocs_ha">High availability</a>.</td></tr>
+                  <tr><td><code>Cluster:InstanceId</code></td><td><em>(machine name)</em></td><td><strong>v3.0+</strong> — names this hub in the lease row, the logs, <code>/api/status</code> and <code>/metrics</code>.</td></tr>
+                  <tr><td><code>Cluster:ConnectionString</code></td><td><em>(empty)</em></td><td><strong>v3.0+</strong> — required when enabled; env / user-secrets only. Its own key, independent of the vector store's and the ledger's.</td></tr>
+                  <tr><td><code>Cluster:LeaseName</code></td><td><code>default</code></td><td><strong>v3.0+</strong> — separates two unrelated meshes sharing one database.</td></tr>
+                  <tr><td><code>Cluster:LeaseTtlSeconds</code></td><td><code>15</code></td><td><strong>v3.0+</strong> — worst-case failover delay, and the window inside which a partitioned old primary fences itself.</td></tr>
+                  <tr><td><code>Cluster:RenewIntervalSeconds</code></td><td><code>5</code></td><td><strong>v3.0+</strong> — renew cadence. Must be ≤ a third of the TTL; startup fails otherwise.</td></tr>
                 </tbody>
               </table>
             </div>
@@ -483,6 +493,7 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
                 </thead>
                 <tbody>
                   <tr><td><code>Coordinator:Url</code></td><td><code>http://localhost:5080/</code></td><td>Coordinator base URL (must be absolute http/https).</td></tr>
+                  <tr><td><code>Coordinator:Endpoints</code></td><td><code>[]</code></td><td><strong>v3.0+</strong> — HA coordinator list. Empty = just <code>Url</code>. The node walks the list on each failed connect; a standby refuses the handshake, so rotation is how it finds the leader. See <a href="#idocs_ha">High availability</a>.</td></tr>
                   <tr><td><code>Coordinator:EnrollmentSecret</code></td><td><em>(empty)</em></td><td>Shared secret matching the coordinator's <code>Auth:NodeEnrollmentSecret</code>.</td></tr>
                   <tr><td><code>Coordinator:HeartbeatInterval</code></td><td><code>00:00:10</code></td><td>How often the node pings the coordinator.</td></tr>
                   <tr><td><code>Coordinator:ModelRefreshInterval</code></td><td><code>00:01:00</code></td><td>How often the node re-reports its model list.</td></tr>
@@ -695,6 +706,7 @@ inferhub_node_tokens_per_second{node="gpu-1",model="llama3"} 42.5</code></pre>
               <li><strong>Vector &amp; retrieval</strong> (<code>collection=</code>) — replicas healed, rebuilds, under-replicated, plus per-collection queries, latency, documents, chunks and ingestion failures.</li>
               <li><strong>Queue</strong> — depth, queued / admitted / timed-out / rejected, median wait.</li>
               <li><strong>Named clients</strong> (<code>client=</code>) — live request and token windows against each configured limit.</li>
+              <li><strong>Cluster</strong> (<code>instance=</code>, <strong>v3.0+</strong>) — <code>cluster_active</code> (<code>1</code> = holds the lease) and <code>cluster_fence</code> (acquisition counter; a change means leadership moved). Absent entirely without <code>Cluster:Enabled</code>. Alert on <code>sum(inferhub_cluster_active) != 1</code>.</li>
             </ul>
 
             <h3>It uses the admin key, not a client key</h3>
@@ -1076,6 +1088,44 @@ curl -X POST http://your-coordinator:5080/api/collections/handbook/documents \
               <li><strong>No silent retry mid-stream.</strong> Once chunks have started flowing, the coordinator does <strong>not</strong> retry — the client already has partial output. Instead the stream ends with a final error chunk so callers don't hang.</li>
               <li><strong>Job timeout.</strong> <code>Dispatcher:TimeoutSeconds</code> caps how long any one job can hold a request open.</li>
             </ul>
+
+            <h3 id="idocs_ha">High availability <span class="badge bg-secondary align-middle">v3.0+</span></h3>
+            <p>Everything above keeps the mesh running while <em>nodes</em> come and go. The <strong>coordinator</strong> was the remaining single point of failure — the always-on hub is the durability anchor by design, which also meant losing it lost everything. From v3.0 you can run a second one as a warm standby.</p>
+            <p>Two (or more) coordinators share one Postgres. A lease row elects exactly one <strong>active</strong> hub; the rest run <strong>standby</strong> — they answer <code>/health</code>, <code>/api/status</code>, <code>/metrics</code> and <code>/api/admin/*</code>, and return <code>503</code> with <code>Retry-After</code> on every inference route. When the active hub dies, the standby takes the lease within the TTL and the mesh serves again: no manual promotion, no data migration, no gossip, because the durable state was already shared.</p>
+            <p><strong>This needs <code>VectorStore:Provider=postgres</code></strong> — that is where the durable truth already lives outside any one coordinator. Under the <code>local</code> provider the raw store is per-hub, so those deployments stay single-coordinator. Usage persistence should be <code>postgres</code> too, or an invoice restarts from zero on whichever hub happens to be leading.</p>
+            <pre><code class="language-json">// Both coordinators, differing only in InstanceId.
+"Cluster": {
+  "Enabled": true,
+  "InstanceId": "hub-a",       // "hub-b" on the other
+  "ConnectionString": "",      // env Cluster__ConnectionString — the SAME database
+  "LeaseTtlSeconds": 15,
+  "RenewIntervalSeconds": 5
+}</code></pre>
+            <p>The node side is one key — leave it empty and the node uses <code>Coordinator:Url</code> exactly as before:</p>
+            <pre><code class="language-json">"Coordinator": { "Endpoints": [ "http://hub-a:8080/", "http://hub-b:8080/" ] }</code></pre>
+            <p>A standby refuses the SignalR handshake with a <code>503</code>, so walking that list is how a node finds the current leader. On demotion the old primary drops its node connections, so they go looking immediately rather than waiting out a heartbeat.</p>
+
+            <h4>What a client sees</h4>
+            <div class="table-responsive">
+              <table class="table table-bordered">
+                <thead><tr><th>Signal</th><th>Active</th><th>Standby</th></tr></thead>
+                <tbody>
+                  <tr><td><code>X-InferHub-Role</code> (every response)</td><td><code>active</code></td><td><code>standby</code></td></tr>
+                  <tr><td><code>GET /health</code></td><td><code>200</code>, <code>"role": "active"</code></td><td><code>200</code>, <code>"role": "standby"</code></td></tr>
+                  <tr><td><code>/api/chat</code>, <code>/v1/*</code>, ingest, search</td><td>served</td><td><code>503</code> + <code>Retry-After</code></td></tr>
+                  <tr><td><code>/api/status</code>, <code>/metrics</code>, <code>/api/admin/*</code></td><td>served</td><td>served</td></tr>
+                  <tr><td>Node SignalR handshake</td><td>accepted</td><td>refused with <code>503</code></td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p>Put a load balancer or DNS failover in front — <strong>the hub does not become one</strong>. Drain on the role or on the inference <code>503</code>, <em>not</em> on <code>/health</code>: a standby is <em>healthy</em>, it just is not leading, and an orchestrator told otherwise will restart-loop the very instance that is supposed to be waiting quietly.</p>
+
+            <h4>Split-brain</h4>
+            <p>A partitioned primary cannot be <em>told</em> it lost the lease — by definition it cannot reach the database that knows. So it demotes itself when it has not <strong>proved</strong> leadership within the TTL, measured on its own clock, before doing any I/O and with each attempt bounded by whatever is left of that deadline. <code>Cluster:LeaseTtlSeconds</code> is therefore both the worst-case failover delay and the fencing window — the same number, on purpose — and <code>RenewIntervalSeconds</code> must be at most a third of it, or one slow round-trip would demote a healthy leader (startup fails if it is not).</p>
+            <p>The trade is deliberate: an unreachable database takes the mesh down rather than letting two hubs both serve. A request the mesh cannot attribute to a single leader is worse than a <code>503</code> the front routes elsewhere. Watch <code>inferhub_cluster_active</code> on <code>/metrics</code> — summed across hubs it should be exactly <code>1</code>; <code>0</code> means no leader, <code>2</code> would mean the fence failed.</p>
+
+            <h4>What v3.0 does not do</h4>
+            <p>Active-active load sharing (both hubs serving at once) and clustering the <code>local</code> vector provider are explicitly future work. This is the foundation — a survivable hub — not the whole HA track. A two-coordinator compose overlay and a failover runbook ship in <code>deploy/docker/</code>.</p>
           </section>
 
           <hr class="divider">
@@ -1257,7 +1307,8 @@ var doc = record.Payload.As(MyJsonContext.Default.Doc);</code></pre>
 		============================ -->
           <section id="idocs_changelog">
             <h2>Roadmap &amp; status</h2>
-            <p>InferHub <strong>2.13</strong> makes the mesh multi-tenant where it counts: RAG collections can now be scoped to a client key. One mesh, several end-clients, and tenant A simply cannot see, ingest into, search or retrieve from tenant B's corpus — on any path, including the inline-RAG header on both surfaces. A collection outside your scope returns a <code>404</code> rather than a <code>403</code>, decided before the store is consulted, so nobody even learns it exists. Provisioning is just ingesting: post into a new collection inside your scope and it is created, with the dimension measured from the embeddings rather than guessed. Admin keys stay fleet-wide. It is an authorization filter over the single vector store — still one source of truth — and a config that never heard of scoping runs exactly as it did in 2.12. See <a href="#idocs_tenancy">Multi-tenant collections</a>.</p>
+            <p>InferHub <strong>3.0</strong> removes the last single point of failure. The always-on coordinator was the mesh's durability anchor by design — which also meant losing it lost everything. Now a second coordinator can run as a <strong>warm standby</strong> over the same Postgres: one holds a lease and serves, the other waits. Kill the active hub and the standby takes the lease, the nodes reconnect to it on their own, and the mesh keeps serving — no manual promotion and no data migration, because the durable state was already shared. A coordinator that cannot <em>prove</em> it still holds the lease demotes itself within the TTL on its own clock, so a partition stops a hub serving rather than letting two of them both answer. Honestly scoped: this is the <em>foundation</em> of the HA track — active-active load sharing and clustering the <code>local</code> vector provider are still to come. Off by default, so single-coordinator setups are byte-identical to 2.13, and still <strong>zero new dependencies</strong> — the lease is one Postgres row. See <a href="#idocs_ha">High availability</a>.</p>
+            <p>That builds on <strong>2.13</strong>, which makes the mesh multi-tenant where it counts: RAG collections can now be scoped to a client key. One mesh, several end-clients, and tenant A simply cannot see, ingest into, search or retrieve from tenant B's corpus — on any path, including the inline-RAG header on both surfaces. A collection outside your scope returns a <code>404</code> rather than a <code>403</code>, decided before the store is consulted, so nobody even learns it exists. Provisioning is just ingesting: post into a new collection inside your scope and it is created, with the dimension measured from the embeddings rather than guessed. Admin keys stay fleet-wide. It is an authorization filter over the single vector store — still one source of truth — and a config that never heard of scoping runs exactly as it did in 2.12. See <a href="#idocs_tenancy">Multi-tenant collections</a>.</p>
             <p>That builds on <strong>2.12</strong>, which makes sticky routing survive a bounce. Conversation affinity now keys on the stable node identity rather than the SignalR connection, so a node reconnecting keeps its warm conversations; with opt-in <code>Affinity:Persistence=file</code> a coordinator restart keeps them pinned too, so a chat that was mid-flight doesn't pay for a cold model reload. The persisted map is a derived cache of routing hints — a lost entry costs one cold load, never a wrong answer — and it is off by default. See <a href="#idocs_conversations">Conversations &amp; routing</a>.</p>
             <p>That builds on <strong>2.11</strong>, which sees images. The OpenAI-compatible surface used to reject image content parts outright, which locked out the whole vision-model class Ollama already serves — <code>llava</code>, <code>llama3.2-vision</code>, <code>qwen2-vl</code>, <code>moondream</code>. Send a base64 image the way the OpenAI SDK does and it now reaches whichever GPU in the fleet can read it, blocking or streaming, and through an OpenAI-backed node too. It will not fetch a remote <code>http</code> image URL — that would make the coordinator issue outbound requests to caller-supplied hosts — and it will not guess a media type it cannot recognise, because mislabelling bytes turns a detectable error into a bad model answer. Nothing about the image is stored or logged, usage stays counts-only, and text-only requests are byte-identical to 2.10. Still <strong>zero new dependencies</strong>. See <a href="#idocs_vision">Vision</a>.</p>
             <p>That builds on <strong>2.10</strong>, which gives the mesh a scrape endpoint. Everything it measured was in-memory and readable only as a status snapshot; now <code>GET /metrics</code> serves the Prometheus text exposition format — fleet in-flight, measured tokens/second per node and model, queue depth and outcomes, retrieval latency per collection, per-client token windows — so those numbers get a history, a graph and an alert. A Prometheus + Grafana overlay with a starter dashboard ships in <code>deploy/docker/</code>. It measures nothing new and <code>/api/status</code> is unchanged; the endpoint is admin-key-guarded by default, because unlike <code>/health</code> it exposes node names and traffic shape. The exposition format is written by hand, so it is still <strong>zero new dependencies</strong>. See <a href="#idocs_metrics">Prometheus <code>/metrics</code></a>.</p>
@@ -1306,10 +1357,11 @@ var doc = record.Payload.As(MyJsonContext.Default.Doc);</code></pre>
                   <tr><td>29</td><td>Multimodal (vision) passthrough</td><td><code>v2.11.0</code></td></tr>
                   <tr><td>30</td><td>Stable-node affinity + optional persistence</td><td><code>v2.12.0</code></td></tr>
                   <tr><td>31</td><td>Client-scoped collections (RAG multi-tenancy)</td><td><code>v2.13.0</code></td></tr>
+                  <tr><td>32</td><td>Multi-coordinator — standby hub &amp; warm failover</td><td><code>v3.0.0</code></td></tr>
                 </tbody>
               </table>
             </div>
-            <p><strong>What's next.</strong> 2.13 scopes RAG collections to a client key, so one mesh can sit behind several end-clients with no cross-tenant visibility. Next is <strong>3.0</strong>: a warm-standby coordinator over shared Postgres, so the always-on hub stops being the single point of failure — the primary dies, the standby takes the lease, nodes reconnect, and the mesh keeps serving, with a fencing guard against split-brain. Further vector backends (Qdrant, SQL Server vector), a migration command between providers, and richer audit trails stay on the table.</p>
+            <p><strong>What's next.</strong> 3.0 closes the roadmap that started at 2.9, so the next track is the rest of high availability: <strong>active-active</strong> multi-coordinator load sharing and cross-hub replication for the <code>local</code> vector provider, which would let a non-Postgres deployment cluster too. Alongside those: an <strong>OTLP push</strong> exporter behind an explicit opt-in (<code>/metrics</code> is scrape-only today), a dedicated cross-encoder reranker behind the existing <code>IReranker</code> seam, further vector backends (Qdrant, SQL Server vector), a migration command between providers, and richer audit trails.</p>
             <p class="text-muted"><small>Made by <a href="https://devart.solutions" target="_blank">Dev Art Solutions</a>. We build production-ready AI and agent systems. Say hello: <a href="mailto:hello@devart.solutions">hello@devart.solutions</a></small></p>
           </section>
 
