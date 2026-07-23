@@ -7,7 +7,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1.0, shrink-to-fit=no">
   <link href="assets/images/favicon.png" rel="icon" type="image/png" />
   <title>InferHub — self-hosted, Ollama-compatible inference mesh</title>
-  <meta name="description" content="InferHub is a self-hosted, Ollama-compatible inference mesh with a pluggable vector store (local or PostgreSQL/pgvector) and inline retrieval-augmented inference. Run the gateway on an always-on, GPU-less host; run worker nodes wherever the GPUs live — no port forwarding required.">
+  <meta name="description" content="InferHub is a self-hosted, Ollama-compatible inference mesh with a pluggable vector store (local, PostgreSQL/pgvector, or Qdrant) and inline retrieval-augmented inference. Run the gateway on an always-on, GPU-less host; run worker nodes wherever the GPUs live — no port forwarding required.">
   <meta name="author" content="Dev-Art-Solutions">
 
   <!-- Stylesheet
@@ -118,6 +118,7 @@
           <li class="nav-item"><a class="nav-link" href="#idocs_vector">Vector store</a>
             <ul class="nav flex-column">
               <li class="nav-item"><a class="nav-link" href="#idocs_vector_postgres">PostgreSQL + pgvector</a></li>
+              <li class="nav-item"><a class="nav-link" href="#idocs_vector_qdrant">Qdrant</a></li>
               <li class="nav-item"><a class="nav-link" href="#idocs_ingestion">Document ingestion</a></li>
               <li class="nav-item"><a class="nav-link" href="#idocs_rag">Retrieval-augmented inference</a></li>
               <li class="nav-item"><a class="nav-link" href="#idocs_hybrid">Hybrid search &amp; reranking</a></li>
@@ -445,7 +446,7 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
                   <tr><td><code>Usage:Postgres:Schema</code> / <code>:Table</code></td><td><code>inferhub</code> / <code>usage_records</code></td><td><strong>v2.7+</strong> — where the ledger lives. Created on first use.</td></tr>
                   <tr><td><code>Ingestion:*</code></td><td>—</td><td><strong>v2.5+</strong> — document ingestion. Inert unless <code>VectorStore:Enabled</code>. Keys and defaults under <a href="#idocs_ingestion">Document ingestion</a>.</td></tr>
                   <tr><td><code>VectorStore:Enabled</code></td><td><code>false</code></td><td>Master switch for the vector store (phase 13+). Off = no persisted state, original v1.4 contract.</td></tr>
-                  <tr><td><code>VectorStore:Provider</code></td><td><code>local</code></td><td><strong>v2.2+</strong> — storage backend: <code>local</code> (file-backed, replicated) | <code>postgres</code> (external pgvector).</td></tr>
+                  <tr><td><code>VectorStore:Provider</code></td><td><code>local</code></td><td><strong>v2.2+</strong> — storage backend: <code>local</code> (file-backed, replicated) | <code>postgres</code> (external pgvector) | <code>qdrant</code> (external Qdrant, <strong>v3.1+</strong>).</td></tr>
                   <tr><td><code>VectorStore:DataDirectory</code></td><td><code>./data/vectors</code></td><td>Where the raw store + snapshots live on the coordinator. Local provider only.</td></tr>
                   <tr><td><code>VectorStore:Distance</code></td><td><code>cosine</code></td><td>Default similarity metric (<code>cosine</code> | <code>dot</code> | <code>l2</code>).</td></tr>
                   <tr><td><code>VectorStore:SnapshotEveryOps</code></td><td><code>5000</code></td><td>Ops appended before a compacted snapshot is written and the ops tail is truncated.</td></tr>
@@ -474,6 +475,15 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
                   <tr><td><code>VectorStore:Postgres:EfSearch</code></td><td><code>40</code></td><td><strong>v2.2+</strong> — per-query <code>hnsw.ef_search</code> (higher = better recall, slower).</td></tr>
                   <tr><td><code>VectorStore:Postgres:CommandTimeoutSeconds</code></td><td><code>30</code></td><td><strong>v2.2+</strong> — Npgsql command timeout.</td></tr>
                   <tr><td><code>VectorStore:Postgres:MaxPoolSize</code></td><td><code>20</code></td><td><strong>v2.2+</strong> — max pool size, applied if the connection string doesn't set one.</td></tr>
+                  <tr><td><code>VectorStore:Qdrant:Url</code></td><td><em>(empty)</em></td><td><strong>v3.1+</strong> — Qdrant REST base URL (e.g. <code>http://localhost:6333</code>). <strong>Required</strong> when <code>Provider=qdrant</code>.</td></tr>
+                  <tr><td><code>VectorStore:Qdrant:ApiKey</code></td><td><em>(empty)</em></td><td><strong>v3.1+</strong> — sent as the <code>api-key</code> header. Set via env (<code>VectorStore__Qdrant__ApiKey</code>) or user-secrets, never in <code>appsettings.json</code>.</td></tr>
+                  <tr><td><code>VectorStore:Qdrant:CollectionPrefix</code></td><td><code>inferhub_</code></td><td><strong>v3.1+</strong> — namespaces InferHub collections so a shared Qdrant can host others' (<code>^[a-z_][a-z0-9_]*$</code>).</td></tr>
+                  <tr><td><code>VectorStore:Qdrant:TimeoutSeconds</code></td><td><code>30</code></td><td><strong>v3.1+</strong> — HTTP timeout.</td></tr>
+                  <tr><td><code>VectorStore:Qdrant:UpsertBatchSize</code></td><td><code>128</code></td><td><strong>v3.1+</strong> — points sent per upsert request.</td></tr>
+                  <tr><td><code>VectorStore:Qdrant:OverFetchMultiplier</code></td><td><code>4</code></td><td><strong>v3.1+</strong> — filtered-query over-fetch multiple before trimming to <code>k</code>.</td></tr>
+                  <tr><td><code>VectorStore:Qdrant:HnswM</code></td><td><code>16</code></td><td><strong>v3.1+</strong> — HNSW <code>m</code> for new collections (≥ 2).</td></tr>
+                  <tr><td><code>VectorStore:Qdrant:HnswEfConstruct</code></td><td><code>64</code></td><td><strong>v3.1+</strong> — HNSW <code>ef_construct</code> for new collections (≥ HnswM).</td></tr>
+                  <tr><td><code>VectorStore:Qdrant:EfSearch</code></td><td><em>(Qdrant default)</em></td><td><strong>v3.1+</strong> — per-query HNSW <code>ef</code>; higher = better recall, slower.</td></tr>
                   <tr><td><code>Cluster:Enabled</code></td><td><code>false</code></td><td><strong>v3.0+</strong> — warm-standby HA. Off = byte-identical to v2.13. Needs <code>VectorStore:Provider=postgres</code>. See <a href="#idocs_ha">High availability</a>.</td></tr>
                   <tr><td><code>Cluster:InstanceId</code></td><td><em>(machine name)</em></td><td><strong>v3.0+</strong> — names this hub in the lease row, the logs, <code>/api/status</code> and <code>/metrics</code>.</td></tr>
                   <tr><td><code>Cluster:ConnectionString</code></td><td><em>(empty)</em></td><td><strong>v3.0+</strong> — required when enabled; env / user-secrets only. Its own key, independent of the vector store's and the ledger's.</td></tr>
@@ -775,7 +785,7 @@ docker compose -f deploy/docker/docker-compose.yml \
 		============================ -->
           <section id="idocs_vector">
             <h2>Vector store</h2>
-            <p class="lead">InferHub's vector store is <strong>provider-backed</strong>: <code>VectorStore:Provider</code> selects <code>local</code> (default) or, as of <strong>v2.2.0</strong>, <code>postgres</code> (external <a href="https://github.com/pgvector/pgvector">PostgreSQL + pgvector</a>). Every endpoint, header, and client call is identical across providers — only the storage engine changes, and embeddings and inline retrieval always run on the fleet.</p>
+            <p class="lead">InferHub's vector store is <strong>provider-backed</strong>: <code>VectorStore:Provider</code> selects <code>local</code> (default), or, as of <strong>v2.2.0</strong>, <code>postgres</code> (external <a href="https://github.com/pgvector/pgvector">PostgreSQL + pgvector</a>), or, as of <strong>v3.1.0</strong>, <code>qdrant</code> (external <a href="https://qdrant.tech">Qdrant</a> over REST). Every endpoint, header, and client call is identical across providers — only the storage engine changes, and embeddings and inline retrieval always run on the fleet.</p>
             <p>The <strong>local</strong> provider (since <strong>v1.5.0</strong>) is embedded on the coordinator. <strong>v1.6.0</strong> closes the text loop. <strong>v1.7.0</strong> spreads each collection's index across the connected nodes and lets queries be served by a node, not just the coordinator. <strong>v1.8.0</strong> makes that placement self-healing — lose a holder and the index is rebuilt on a survivor from the raw store, automatically. <strong>v1.9.0</strong> puts all of it on the console. <strong>v2.0.0</strong> wires retrieval straight into <code>/api/chat</code> and <code>/api/generate</code>: the RAG mesh, GA. The local provider has two layers, kept honest:</p>
             <ul>
               <li><strong>Raw store</strong> — an append-only log of vector ops on disk (plus a periodic compacted snapshot) under <code>VectorStore:DataDirectory</code>. Plain newline-delimited JSON, one folder per collection. Source of truth, copyable, backupable. <strong>Lives on the coordinator</strong>.</li>
@@ -918,6 +928,40 @@ curl -X POST http://localhost:5080/api/vector/docs/query \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -d '{"vector":[1,0,0],"k":3}'</code></pre>
 
+            <h3 id="idocs_vector_qdrant">Qdrant (v3.1+)</h3>
+            <p>Set <code>VectorStore:Provider</code> to <code>qdrant</code> and point the coordinator at a <a href="https://qdrant.tech">Qdrant</a>. <strong>Pick it</strong> when you already run Qdrant or want its payload model, filtering and quantization roadmap. The connector is the <strong>third</strong> implementation behind the <code>IVectorStore</code> seam — and unlike the pgvector one, it added <strong>zero new dependencies</strong>: Qdrant's API is plain JSON over REST, and InferHub already speaks HTTP-to-a-server by hand (the OpenAI upstream client from v2.4), so the connector is a hand-rolled <code>HttpClient</code>, not the official gRPC package.</p>
+
+            <h4>How records map</h4>
+            <p>Qdrant accepts <strong>only</strong> an integer or a UUID as a point id, and InferHub ids are neither — a chunk id is a SHA-256, a document id might be a filename. So each id becomes a deterministic <code>UUIDv5</code> point id and the real id, with the payload and metadata, rides in the point payload. Because the UUID is deterministic, re-ingesting a document still <strong>replaces</strong> its chunks rather than duplicating them (the idempotent-re-ingest promise from v2.5). Nothing you send or read back ever exposes the UUID. Score sign-conventions match the local provider exactly — <code>cosine</code>/<code>dot</code> higher-is-better, <code>l2</code> lower-is-better — verified by a parity test that runs one dataset through all three engines and agrees within 1e-4, against a live Qdrant.</p>
+
+            <h4>Honest trade-offs</h4>
+            <p>Qdrant is itself a durable, concurrently-queryable source of truth, so — exactly as under Postgres — the coordinator holds no vector state on disk and does not replicate an index onto the fleet:</p>
+            <ul>
+              <li><strong>No node replication, no self-healing, no node-served vector reads</strong> — search runs in Qdrant; the replica/placement columns are zeroed and the heal/rebuild metrics stay flat.</li>
+              <li>The <strong>rebuild</strong> admin endpoint returns <code>409</code>; the status <code>vector</code> block reports <code>"provider":"qdrant"</code> and the console shows a provider badge with the Rebuild button disabled.</li>
+              <li><strong>Keyword search is coarse in this release.</strong> Qdrant's full-text index is a filter, not a ranking, so hybrid retrieval fuses a real vector branch with a rough keyword branch and says so in its logs. Server-side sparse-vector hybrid is the next release; vector search and inline RAG are full-strength today.</li>
+              <li><strong>No migration path between providers yet</strong> — switching on a populated deployment means re-ingesting.</li>
+            </ul>
+            <p>The mesh stays intact: <strong>embeddings and inline retrieval still run on the GPU nodes</strong>. Only the storage engine changed.</p>
+
+            <h4>Walk-through</h4>
+            <p>Bring up a Qdrant, point the coordinator at it (the API key via env, never <code>appsettings.json</code>), and use the same API as ever:</p>
+            <pre><code class="bash">docker compose -f deploy/qdrant/docker-compose.yml up -d
+
+export VectorStore__Enabled=true
+export VectorStore__Provider=qdrant
+export VectorStore__Qdrant__Url="http://localhost:6333"
+dotnet run --project src/InferHub.Coordinator</code></pre>
+            <pre><code class="bash">curl -X POST http://localhost:5080/api/admin/vector/collections \
+  -H "Authorization: Bearer YOUR_ADMIN_KEY" \
+  -d '{"name":"docs","dimension":3,"distance":"cosine"}'
+curl -X POST http://localhost:5080/api/vector/docs/upsert \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -d '{"id":"a","vector":[1,0,0],"metadata":{"lang":"en"}}'
+curl -X POST http://localhost:5080/api/vector/docs/query \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -d '{"vector":[1,0,0],"k":3}'</code></pre>
+
             <h3 id="idocs_ingestion">Document ingestion (v2.5+)</h3>
             <p>The vector store has existed since v1.5 and inline retrieval since v2.0 — but until v2.5 you had to <em>fill</em> the store yourself, with vectors you computed elsewhere or text pasted in by hand. Everything in between, the actual work of turning a folder of PDFs into something a model can answer from, was left as an exercise for the reader. v2.5 closes it: upload a document and the coordinator extracts its text, splits it into overlapping chunks, embeds those chunks <strong>on the GPU fleet</strong> — through the same dispatcher that serves chat, so the coordinator grows no embedding path of its own — and writes them to whichever vector store you configured.</p>
 <pre><code class="bash"># The collection must exist first: its dimension has to match your embedding model.
@@ -959,7 +1003,7 @@ curl -X POST http://your-coordinator:5080/api/collections/handbook/documents \
               <li><strong>A partial ingest is a failure and says so.</strong> If the fleet goes away mid-document, the response is <code>500</code> with <code>"status": "partial"</code> and the chunk counts. The chunks that landed are real and visible, the document lists as <code>partial</code>, and re-posting the same bytes <em>resumes</em> rather than no-ops. A half-ingested document that claims success is worse than a failure.</li>
             </ul>
 
-            <p>Ingestion is provider-agnostic: it works identically under the file-backed local store (where the new chunks replicate to your nodes through the usual path) and under PostgreSQL + pgvector. The embedding work is batched with a bounded number of chunks in flight, so ingesting a three-hundred-page manual does not starve the interactive chat traffic sharing the same GPUs. The console gained a <strong>Documents</strong> panel: pick a collection, drop a file, watch the chunk count climb, preview chunks, delete a document.</p>
+            <p>Ingestion is provider-agnostic: it works identically under the file-backed local store (where the new chunks replicate to your nodes through the usual path) and under the external providers, PostgreSQL + pgvector and Qdrant. The embedding work is batched with a bounded number of chunks in flight, so ingesting a three-hundred-page manual does not starve the interactive chat traffic sharing the same GPUs. The console gained a <strong>Documents</strong> panel: pick a collection, drop a file, watch the chunk count climb, preview chunks, delete a document.</p>
 
             <div class="table-responsive">
               <table class="table table-bordered">
@@ -1358,10 +1402,11 @@ var doc = record.Payload.As(MyJsonContext.Default.Doc);</code></pre>
                   <tr><td>30</td><td>Stable-node affinity + optional persistence</td><td><code>v2.12.0</code></td></tr>
                   <tr><td>31</td><td>Client-scoped collections (RAG multi-tenancy)</td><td><code>v2.13.0</code></td></tr>
                   <tr><td>32</td><td>Multi-coordinator — standby hub &amp; warm failover</td><td><code>v3.0.0</code></td></tr>
+                  <tr><td>33</td><td>Qdrant vector connector</td><td><code>v3.1.0</code></td></tr>
                 </tbody>
               </table>
             </div>
-            <p><strong>What's next.</strong> 3.0 closes the roadmap that started at 2.9, so the next track is the rest of high availability: <strong>active-active</strong> multi-coordinator load sharing and cross-hub replication for the <code>local</code> vector provider, which would let a non-Postgres deployment cluster too. Alongside those: an <strong>OTLP push</strong> exporter behind an explicit opt-in (<code>/metrics</code> is scrape-only today), a dedicated cross-encoder reranker behind the existing <code>IReranker</code> seam, further vector backends (Qdrant, SQL Server vector), a migration command between providers, and richer audit trails.</p>
+            <p><strong>What's next.</strong> With Qdrant behind the <code>IVectorStore</code> seam (v3.1, zero new dependencies), the Qdrant track continues: <strong>server-side hybrid search</strong> with sparse vectors (v3.2), then Qdrant production knobs and a <strong>cross-provider migration tool</strong> that finally copies a populated deployment between <code>local</code>, <code>postgres</code> and <code>qdrant</code> (v3.3). Also still on the table: <strong>active-active</strong> multi-coordinator load sharing and cross-hub replication for the <code>local</code> vector provider, an <strong>OTLP push</strong> exporter behind an explicit opt-in (<code>/metrics</code> is scrape-only today), and a dedicated cross-encoder reranker behind the existing <code>IReranker</code> seam.</p>
             <p class="text-muted"><small>Made by <a href="https://devart.solutions" target="_blank">Dev Art Solutions</a>. We build production-ready AI and agent systems. Say hello: <a href="mailto:hello@devart.solutions">hello@devart.solutions</a></small></p>
           </section>
 
