@@ -119,6 +119,7 @@
             <ul class="nav flex-column">
               <li class="nav-item"><a class="nav-link" href="#idocs_vector_postgres">PostgreSQL + pgvector</a></li>
               <li class="nav-item"><a class="nav-link" href="#idocs_vector_qdrant">Qdrant</a></li>
+              <li class="nav-item"><a class="nav-link" href="#idocs_migrate">Migrating between providers</a></li>
               <li class="nav-item"><a class="nav-link" href="#idocs_ingestion">Document ingestion</a></li>
               <li class="nav-item"><a class="nav-link" href="#idocs_rag">Retrieval-augmented inference</a></li>
               <li class="nav-item"><a class="nav-link" href="#idocs_hybrid">Hybrid search &amp; reranking</a></li>
@@ -906,7 +907,7 @@ CREATE INDEX ON inferhub.vec_docs USING gin (metadata);</code></pre>
               <li>The <strong>rebuild</strong> admin endpoint returns <code>409</code> (nothing to re-push), and the console disables its Rebuild button.</li>
               <li>The status <code>vector</code> block carries a <code>provider</code> tag; the console shows a provider badge.</li>
               <li>pgvector's ANN index tops out at <strong>2000 dimensions</strong> — above that a collection still works but falls back to exact scan (logged at creation), never a silently broken index.</li>
-              <li><strong>No migration path between providers yet</strong> — switching on a populated deployment means re-ingesting.</li>
+              <li>Moving an existing deployment here does <strong>not</strong> mean re-ingesting — since v3.3, <a href="#idocs_migrate"><code>inferhub-migrate</code></a> copies a populated <code>local</code> or <code>qdrant</code> store into Postgres.</li>
             </ul>
             <p>The mesh stays intact: <strong>embeddings and inline retrieval still run on the GPU nodes</strong>. Only the storage engine changed.</p>
 
@@ -939,13 +940,31 @@ curl -X POST http://localhost:5080/api/vector/docs/query \
             <ul>
               <li><strong>No node replication, no self-healing, no node-served vector reads</strong> — search runs in Qdrant; the replica/placement columns are zeroed and the heal/rebuild metrics stay flat.</li>
               <li>The <strong>rebuild</strong> admin endpoint returns <code>409</code>; the status <code>vector</code> block reports <code>"provider":"qdrant"</code> and the console shows a provider badge with the Rebuild button disabled.</li>
-              <li><strong>No migration path between providers yet</strong> — switching on a populated deployment means re-ingesting (the cross-provider migration tool is v3.3).</li>
             </ul>
             <p>The mesh stays intact: <strong>embeddings and inline retrieval still run on the GPU nodes</strong>. Only the storage engine changed.</p>
 
             <h4>Hybrid search (v3.2+)</h4>
             <p>Since v3.2, a <code>hybrid</code> retrieval under Qdrant is <strong>one Query API round trip</strong> that fuses a dense embedding and a sparse (lexical) vector by reciprocal rank fusion <strong>inside Qdrant</strong> — ranking by meaning and by exact terms at once, in the engine, instead of the hub stitching two searches together. The sparse vector is computed on the coordinator from the same tokenizer the local BM25 index uses (so <code>local</code> and <code>qdrant</code> agree on the lexical view of a chunk) and is IDF-weighted by Qdrant server-side via <code>modifier: idf</code>, so it still adds <strong>no dependency</strong>. <code>keyword</code> mode is now a real sparse-vector search too, not the coarse v3.1 filter.</p>
-            <p>It is opt-in per request and per collection: retrieval mode still defaults to <code>vector</code>, so a deployment that sends no <code>X-InferHub-Retrieve-Mode</code> header is byte-identical to v3.1. Collections created on <strong>v3.2+</strong> carry the named dense + sparse vectors that hybrid needs; a collection created on <strong>v3.1 stays dense-only</strong> — it keeps answering vector queries after you upgrade, and its keyword search stays coarse until it is re-created or migrated (v3.3).</p>
+            <p>It is opt-in per request and per collection: retrieval mode still defaults to <code>vector</code>, so a deployment that sends no <code>X-InferHub-Retrieve-Mode</code> header is byte-identical to v3.1. Collections created on <strong>v3.2+</strong> carry the named dense + sparse vectors that hybrid needs; a collection created on <strong>v3.1 stays dense-only</strong> — it keeps answering vector queries after you upgrade, and its keyword search stays coarse until it is re-created or re-populated with <a href="#idocs_migrate"><code>inferhub-migrate</code></a> (v3.3), which creates the target in the current shape.</p>
+
+            <h4>Production Qdrant (v3.3+)</h4>
+            <p>A Qdrant that is more than a demo wants three things a default collection does not have. All three are <code>VectorStore:Qdrant:</code> settings applied when a collection is <strong>created</strong> — existing collections are untouched, which is another reason migrating is useful.</p>
+            <div class="table-responsive">
+              <table class="table table-bordered">
+                <thead>
+                  <tr><th>Key</th><th>Default</th><th>What it buys</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td><code>Quantization</code></td><td><code>none</code></td><td><code>scalar</code> stores vectors as int8 (roughly 4× less vector memory); <code>binary</code> as one bit per dimension (roughly 32×, and materially lossy).</td></tr>
+                  <tr><td><code>OnDisk</code></td><td><code>false</code></td><td>Keeps dense vectors on disk instead of RAM. For a collection larger than the memory you will give it, this is the difference between running and not; the cost is disk reads on the search path.</td></tr>
+                  <tr><td><code>PayloadIndexKeys</code></td><td><code>["documentId"]</code></td><td>Builds a Qdrant payload index per metadata key. Every ingestion scan and filtered delete is a payload filter, and an unindexed payload filter is a full scan.</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="alert alert-warning" role="alert">
+              <strong>Quantization is a memory-for-recall trade, not a free win.</strong> Quantized vectors rank approximately, and how much that costs you depends entirely on your corpus and your embedding model. Measure it with the <a href="#idocs_hybrid">eval harness</a> before deciding it is acceptable — that is exactly what the harness is for. A store that ranks approximately and is described only as "faster" is a store that lies about relevance.
+            </div>
+            <p><strong>A remote Qdrant needs an API key, and InferHub says so.</strong> Qdrant ships unauthenticated: fine on localhost, a data leak anywhere else, because the point payload holds the chunk <em>text</em> — anything that can reach the port can read your corpus and delete it. Point the coordinator at a non-loopback <code>Url</code> with no <code>ApiKey</code> and it <strong>warns at startup</strong>, in those words. It is a warning and not a refusal on purpose: a private network with its own controls is a legitimate deployment, and refusing to boot would be us overruling an operator about their own network. TLS is just an <code>https://</code> URL.</p>
 
             <h4>Walk-through</h4>
             <p>Bring up a Qdrant, point the coordinator at it (the API key via env, never <code>appsettings.json</code>), and use the same API as ever:</p>
@@ -964,6 +983,42 @@ curl -X POST http://localhost:5080/api/vector/docs/upsert \
 curl -X POST http://localhost:5080/api/vector/docs/query \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -d '{"vector":[1,0,0],"k":3}'</code></pre>
+
+            <h3 id="idocs_migrate">Migrating between providers (v3.3+)</h3>
+            <p>Every release since the vector store became pluggable carried the same confession: switching providers on a populated deployment meant re-ingesting from the original documents. That is awkward advice from a system that deliberately <strong>does not keep</strong> your original documents. v3.3 deletes the caveat. <code>inferhub-migrate</code> reads every chunk <em>and vector</em> out of one provider and writes them into another — <code>local</code> ↔ <code>postgres</code> ↔ <code>qdrant</code>, any pair, either direction.</p>
+<pre><code class="bash"># Dry run first: what would be copied, and where. Writes nothing.
+dotnet run --project tools/InferHub.Migrate -- \
+  --from local:./data/vectors --to qdrant:http://localhost:6333 --dry-run
+
+# Then for real.
+dotnet run --project tools/InferHub.Migrate -- \
+  --from local:./data/vectors --to qdrant:http://localhost:6333</code></pre>
+            <p>Each side is either a <strong>provider shorthand</strong> (<code>local:./data/vectors</code>, <code>qdrant:http://localhost:6333</code>, <code>postgres:Host=…</code>) or the <strong>path to a JSON config file</strong> holding a <code>VectorStore</code> section — a coordinator's own <code>appsettings.json</code> will do, which is the honest way to migrate with the exact settings the hub uses. A secret on a command line ends up in shell history, so prefer the file form when a connection string or an API key is involved.</p>
+            <div class="table-responsive">
+              <table class="table table-bordered">
+                <thead>
+                  <tr><th>Flag</th><th>Purpose</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td><code>--from</code> / <code>--to</code></td><td>Provider shorthand or JSON config path. <strong>Required.</strong></td></tr>
+                  <tr><td><code>--collection &lt;name&gt;</code></td><td>Copy just this one collection (default: all of them).</td></tr>
+                  <tr><td><code>--dry-run</code></td><td>Report the plan and write nothing.</td></tr>
+                  <tr><td><code>--batch-size &lt;n&gt;</code></td><td>Records read per page (default 256).</td></tr>
+                  <tr><td><code>--parallel &lt;n&gt;</code></td><td>Concurrent upserts into the target (default 4).</td></tr>
+                  <tr><td><code>--from-key</code> / <code>--to-key</code></td><td>Qdrant API key for that side.</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p>The decisions that matter:</p>
+            <ul>
+              <li>It creates each collection on the target with the <strong>same dimension and distance</strong>. A target collection that already exists with a <em>different</em> shape is <strong>skipped with a reason</strong>, not half-filled — the first case fails per record, and the second would <em>succeed</em> and silently rank differently.</li>
+              <li><strong>Re-running is safe.</strong> Chunk ids are deterministic (v2.5), so a second run overwrites rather than duplicating, and an interrupted run is resumed by running it again.</li>
+              <li><strong>It never deletes.</strong> A record in the target that is not in the source is left alone: a tool that removes data nobody asked it to remove is a worse failure than one that leaves a stale record behind.</li>
+              <li>It reports the <strong>target's own record count</strong> and exits non-zero if a collection was skipped or came up short. "The upserts returned" is not the same claim as "the data is there."</li>
+              <li>It is a <strong>standalone console tool and is not in the images.</strong> Moving data between stores is an operator's deliberate action, never something a running coordinator should do to itself — a hub that copied itself into another engine would be a second write path and, while the copy ran, a second truth.</li>
+              <li>Migrating <em>into</em> Qdrant creates collections in the current v3.2+ hybrid shape, so this is also how a dense-only v3.1 collection gains server-side hybrid search — without re-ingesting a single document.</li>
+            </ul>
+            <p><strong>One surprise worth naming.</strong> Qdrant stores the <strong>unit-normalised</strong> vector in a <code>cosine</code> collection (under <code>dot</code> and <code>l2</code> it stores exactly what you sent), so a cosine collection migrated <em>out of</em> Qdrant carries normalised vectors — same direction, length 1. That is safe: cosine similarity is scale-invariant, so the target returns the same ids in the same order with the same scores, and there is a round-trip test that asserts precisely that. It is documented because it is surprising, and because someone diffing raw floats across a migration would otherwise reasonably conclude the copy broke. It didn't.</p>
 
             <h3 id="idocs_ingestion">Document ingestion (v2.5+)</h3>
             <p>The vector store has existed since v1.5 and inline retrieval since v2.0 — but until v2.5 you had to <em>fill</em> the store yourself, with vectors you computed elsewhere or text pasted in by hand. Everything in between, the actual work of turning a folder of PDFs into something a model can answer from, was left as an exercise for the reader. v2.5 closes it: upload a document and the coordinator extracts its text, splits it into overlapping chunks, embeds those chunks <strong>on the GPU fleet</strong> — through the same dispatcher that serves chat, so the coordinator grows no embedding path of its own — and writes them to whichever vector store you configured.</p>
@@ -1355,7 +1410,8 @@ var doc = record.Payload.As(MyJsonContext.Default.Doc);</code></pre>
 		============================ -->
           <section id="idocs_changelog">
             <h2>Roadmap &amp; status</h2>
-            <p>InferHub <strong>3.0</strong> removes the last single point of failure. The always-on coordinator was the mesh's durability anchor by design — which also meant losing it lost everything. Now a second coordinator can run as a <strong>warm standby</strong> over the same Postgres: one holds a lease and serves, the other waits. Kill the active hub and the standby takes the lease, the nodes reconnect to it on their own, and the mesh keeps serving — no manual promotion and no data migration, because the durable state was already shared. A coordinator that cannot <em>prove</em> it still holds the lease demotes itself within the TTL on its own clock, so a partition stops a hub serving rather than letting two of them both answer. Honestly scoped: this is the <em>foundation</em> of the HA track — active-active load sharing and clustering the <code>local</code> vector provider are still to come. Off by default, so single-coordinator setups are byte-identical to 2.13, and still <strong>zero new dependencies</strong> — the lease is one Postgres row. See <a href="#idocs_ha">High availability</a>.</p>
+            <p>InferHub <strong>3.3</strong> finishes the Qdrant track and deletes a caveat every release since 2.2 carried. <code>inferhub-migrate</code> copies a populated vector store between any two providers — <code>local</code> ↔ <code>postgres</code> ↔ <code>qdrant</code> — so switching backends no longer means re-ingesting documents the system deliberately never kept. It refuses a shape mismatch rather than half-filling a collection, never deletes, re-runs converge, and it checks the <em>target's</em> own count before claiming success. Alongside it, Qdrant gains the knobs a real deployment wants: scalar and binary quantization (documented as the memory-for-recall trade it is, measurable with the eval harness rather than asserted), on-disk vectors, payload indexing, and a startup warning if you point at a remote Qdrant with no API key. Running it against a live Qdrant turned up one genuine surprise, now pinned by a test and written down: Qdrant stores the <em>normalised</em> vector in a cosine collection. Still <strong>zero new dependencies</strong>. See <a href="#idocs_migrate">Migrating between providers</a>.</p>
+            <p>That builds on <strong>3.0</strong>, which removed the last single point of failure. The always-on coordinator was the mesh's durability anchor by design — which also meant losing it lost everything. Now a second coordinator can run as a <strong>warm standby</strong> over the same Postgres: one holds a lease and serves, the other waits. Kill the active hub and the standby takes the lease, the nodes reconnect to it on their own, and the mesh keeps serving — no manual promotion and no data migration, because the durable state was already shared. A coordinator that cannot <em>prove</em> it still holds the lease demotes itself within the TTL on its own clock, so a partition stops a hub serving rather than letting two of them both answer. Honestly scoped: this is the <em>foundation</em> of the HA track — active-active load sharing and clustering the <code>local</code> vector provider are still to come. Off by default, so single-coordinator setups are byte-identical to 2.13, and still <strong>zero new dependencies</strong> — the lease is one Postgres row. See <a href="#idocs_ha">High availability</a>.</p>
             <p>That builds on <strong>2.13</strong>, which makes the mesh multi-tenant where it counts: RAG collections can now be scoped to a client key. One mesh, several end-clients, and tenant A simply cannot see, ingest into, search or retrieve from tenant B's corpus — on any path, including the inline-RAG header on both surfaces. A collection outside your scope returns a <code>404</code> rather than a <code>403</code>, decided before the store is consulted, so nobody even learns it exists. Provisioning is just ingesting: post into a new collection inside your scope and it is created, with the dimension measured from the embeddings rather than guessed. Admin keys stay fleet-wide. It is an authorization filter over the single vector store — still one source of truth — and a config that never heard of scoping runs exactly as it did in 2.12. See <a href="#idocs_tenancy">Multi-tenant collections</a>.</p>
             <p>That builds on <strong>2.12</strong>, which makes sticky routing survive a bounce. Conversation affinity now keys on the stable node identity rather than the SignalR connection, so a node reconnecting keeps its warm conversations; with opt-in <code>Affinity:Persistence=file</code> a coordinator restart keeps them pinned too, so a chat that was mid-flight doesn't pay for a cold model reload. The persisted map is a derived cache of routing hints — a lost entry costs one cold load, never a wrong answer — and it is off by default. See <a href="#idocs_conversations">Conversations &amp; routing</a>.</p>
             <p>That builds on <strong>2.11</strong>, which sees images. The OpenAI-compatible surface used to reject image content parts outright, which locked out the whole vision-model class Ollama already serves — <code>llava</code>, <code>llama3.2-vision</code>, <code>qwen2-vl</code>, <code>moondream</code>. Send a base64 image the way the OpenAI SDK does and it now reaches whichever GPU in the fleet can read it, blocking or streaming, and through an OpenAI-backed node too. It will not fetch a remote <code>http</code> image URL — that would make the coordinator issue outbound requests to caller-supplied hosts — and it will not guess a media type it cannot recognise, because mislabelling bytes turns a detectable error into a bad model answer. Nothing about the image is stored or logged, usage stays counts-only, and text-only requests are byte-identical to 2.10. Still <strong>zero new dependencies</strong>. See <a href="#idocs_vision">Vision</a>.</p>
@@ -1408,10 +1464,11 @@ var doc = record.Payload.As(MyJsonContext.Default.Doc);</code></pre>
                   <tr><td>32</td><td>Multi-coordinator — standby hub &amp; warm failover</td><td><code>v3.0.0</code></td></tr>
                   <tr><td>33</td><td>Qdrant vector connector</td><td><code>v3.1.0</code></td></tr>
                   <tr><td>34</td><td>Qdrant-native hybrid search</td><td><code>v3.2.0</code></td></tr>
+                  <tr><td>35</td><td>Qdrant production knobs + provider migration</td><td><code>v3.3.0</code></td></tr>
                 </tbody>
               </table>
             </div>
-            <p><strong>What's next.</strong> With Qdrant fusing dense + sparse vectors server-side (v3.2, still zero new dependencies), the Qdrant track finishes with <strong>production knobs</strong> — quantization, on-disk vectors, remote auth — and a <strong>cross-provider migration tool</strong> that finally copies a populated deployment between <code>local</code>, <code>postgres</code> and <code>qdrant</code> (v3.3). Also still on the table: <strong>active-active</strong> multi-coordinator load sharing and cross-hub replication for the <code>local</code> vector provider, an <strong>OTLP push</strong> exporter behind an explicit opt-in (<code>/metrics</code> is scrape-only today), and a dedicated cross-encoder reranker behind the existing <code>IReranker</code> seam.</p>
+            <p><strong>What's next.</strong> The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2), and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. Still on the table: <strong>active-active</strong> multi-coordinator load sharing and cross-hub replication for the <code>local</code> vector provider, an <strong>OTLP push</strong> exporter behind an explicit opt-in (<code>/metrics</code> is scrape-only today), and a dedicated cross-encoder reranker behind the existing <code>IReranker</code> seam. A fourth vector backend (Milvus, Weaviate) is the same shape as the third and will ship on real demand rather than for the comparison matrix.</p>
             <p class="text-muted"><small>Made by <a href="https://devart.solutions" target="_blank">Dev Art Solutions</a>. We build production-ready AI and agent systems. Say hello: <a href="mailto:hello@devart.solutions">hello@devart.solutions</a></small></p>
           </section>
 
