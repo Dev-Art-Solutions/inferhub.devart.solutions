@@ -618,6 +618,7 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
               </table>
             </div>
             <p>One implementation covers all five, because they all converged on the same wire format. Three roadmap items — "vLLM backend", "llama.cpp backend", "hosted backend" — collapsed into one, entirely because v2.3's translation code could be run backwards.</p>
+            <p>One consequence worth knowing: the <a href="#idocs_node_supervisor">Ollama supervisor</a> (v3.4+) applies to <code>ollama</code> nodes only. On an <code>openai</code> node it disables itself with one log line, because a vLLM or hosted upstream is somebody else's server and not this node's to restart.</p>
 <pre><code class="json">// src/InferHub.Node/appsettings.json
 {
   "Backend": { "Type": "openai" },
@@ -691,6 +692,16 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
             <div class="alert alert-info" role="alert">
               <strong>Linux?</strong> The equivalent is the same host pattern with <code>builder.Services.AddSystemd()</code> and a <code>.service</code> unit file — same composition root, different lifetime integration.
             </div>
+
+            <h4>The Ollama supervisor and service privileges (v3.4+)</h4>
+            <p>If you turn on the <a href="#idocs_node_supervisor">Ollama supervisor</a>, this is the deployment where the service account matters. Where Ollama is itself installed as a service, restarting it means <code>sc.exe stop Ollama</code> / <code>sc.exe start Ollama</code> — and <strong>a node service running under a restricted account cannot control a machine-wide one</strong>. The failure is reported as a single line naming the privilege and the service rather than an "Access is denied" stack trace, so it is diagnosable straight from the Event Log.</p>
+            <p>Three ways out, in the order most people should try them:</p>
+            <ol>
+              <li>Run the node service as <strong><code>LocalSystem</code></strong> (the install script's default). It can control the <code>Ollama</code> service; nothing further is needed.</li>
+              <li>Grant your virtual account rights on the <code>Ollama</code> service <em>specifically</em> — narrower than administrative rights on the box — with <code>sc.exe sdshow Ollama</code> to read the descriptor and <code>sc.exe sdset</code> to write it back with a start/stop ACE added. <strong>Paste the existing descriptor back in:</strong> <code>sdset</code> replaces it wholesale, and dropping the ACEs that were there is how the <code>Ollama</code> service becomes uncontrollable by anyone.</li>
+              <li>Leave the supervisor off on this node. It is off by default, and a fleet that installs and repairs Ollama by policy does not need it.</li>
+            </ol>
+            <p>Where Ollama is installed as a <strong>binary</strong> rather than a service, the node spawns <code>ollama serve</code> itself and needs only execute rights on that path — but the per-user Windows installer puts it in <code>%LOCALAPPDATA%\Programs\Ollama</code>, which may not be visible to the service account at all. Point <code>Ollama:Supervisor:ExecutablePath</code> at it explicitly, or install Ollama machine-wide.</p>
           </section>
 
           <hr class="divider">
@@ -1535,7 +1546,7 @@ var doc = record.Payload.As(MyJsonContext.Default.Doc);</code></pre>
                 </tbody>
               </table>
             </div>
-            <p><strong>What's next.</strong> The Qdrant track is finished: a connector (v3.1), server-side hybrid fusion (v3.2), and production knobs plus a migration tool (v3.3) — all three at zero new dependencies. Still on the table: teaching the <strong>coordinator</strong> about backend health as a typed signal (a status column and an alert, rather than a line in the node's log), <strong>active-active</strong> multi-coordinator load sharing and cross-hub replication for the <code>local</code> vector provider, an <strong>OTLP push</strong> exporter behind an explicit opt-in (<code>/metrics</code> is scrape-only today), and a dedicated cross-encoder reranker behind the existing <code>IReranker</code> seam. A fourth vector backend (Milvus, Weaviate) is the same shape as the third and will ship on real demand rather than for the comparison matrix.</p>
+            <p><strong>What's next.</strong> The Qdrant track is finished — a connector (v3.1), server-side hybrid fusion (v3.2), production knobs plus a migration tool (v3.3) — and v3.4 turned to the node, which until then sat in the fleet as a passive victim of its own backend. All four at zero new dependencies. Still on the table: teaching the <strong>coordinator</strong> about backend health as a typed signal (a status column and an alert, rather than a line in the node's log), <strong>active-active</strong> multi-coordinator load sharing and cross-hub replication for the <code>local</code> vector provider, an <strong>OTLP push</strong> exporter behind an explicit opt-in (<code>/metrics</code> is scrape-only today), and a dedicated cross-encoder reranker behind the existing <code>IReranker</code> seam. A fourth vector backend (Milvus, Weaviate) is the same shape as the third and will ship on real demand rather than for the comparison matrix.</p>
             <p class="text-muted"><small>Made by <a href="https://devart.solutions" target="_blank">Dev Art Solutions</a>. We build production-ready AI and agent systems. Say hello: <a href="mailto:hello@devart.solutions">hello@devart.solutions</a></small></p>
           </section>
 
