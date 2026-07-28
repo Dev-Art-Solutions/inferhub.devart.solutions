@@ -88,6 +88,7 @@
             </ul>
           </li>
           <li class="nav-item"><a class="nav-link" href="#idocs_quickstart">Quick Start</a></li>
+          <li class="nav-item"><a class="nav-link" href="#idocs_solo">Solo mode — just the node</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_openai">OpenAI-compatible API</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_vision">Vision</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_auth">Authentication</a>
@@ -224,6 +225,79 @@ docker compose -f deploy/docker/docker-compose.yml up -d</code></pre>
   -H "Authorization: Bearer YOUR_API_KEY" \
   -d '{"model":"llama3","messages":[{"role":"user","content":"Hello!"}],"stream":false}'</code></pre>
             <p>That's it. The coordinator picks a node that holds <code>llama3</code>, runs the request there, and streams the response back. Prefer an OpenAI SDK? Point it at <code>/v1</code> instead — see below.</p>
+
+            <h3>Just a node <small class="text-muted">(v3.5+)</small></h3>
+            <p>Both of the above run two processes so that one client can reach one backend. On a single machine that is all ceremony and no routing, so since <strong>v3.5</strong> the node serves the same API itself — no coordinator, no enrollment secret, no internet.</p>
+            <pre><code class="bash">dotnet run --project src/InferHub.Node \
+  --LocalApi:Enabled=true --Coordinator:Enabled=false</code></pre>
+            <p>Then change one string and nothing else:</p>
+            <pre><code class="python"># before — the fleet
+client = OpenAI(base_url="http://hub.example:5080/v1", api_key=KEY)
+# after — just the node
+client = OpenAI(base_url="http://localhost:5081/v1", api_key=KEY)</code></pre>
+            <p>See <a href="#idocs_solo">Solo mode</a> for the full surface and the three things it deliberately refuses.</p>
+          </section>
+
+          <hr class="divider">
+
+          <!-- Solo mode
+		============================ -->
+          <section id="idocs_solo">
+            <h2>Solo mode — just the node <small class="text-muted">(v3.5+)</small></h2>
+            <p class="lead">A coordinator, a node, an enrollment secret and two processes — to route between one client and one backend. For a single machine that is all cost and no benefit.</p>
+            <p>InferHub had exactly one shape until v3.5: a coordinator somewhere always-on, and nodes on GPU machines dialling out to it. That shape is right when you have a fleet and it is overhead when you have one machine — and one machine is how most people start, and how a lot of people stay.</p>
+<pre><code class="json">// src/InferHub.Node/appsettings.json
+{
+  "Coordinator": { "Enabled": false },
+  "LocalApi": {
+    "Enabled": true,
+    "Urls": "http://localhost:5081"
+  }
+}</code></pre>
+            <p>Same request bodies, same responses, same streaming, same error envelope — both the OpenAI dialect at <code>/v1</code> and the Ollama one at <code>/api</code>, including tool calls and vision. A solo node is the hub's formatting layer sitting directly on the node's executor, with the routing layer removed: the hub translates a request, routes it, queues it, dispatches it over SignalR and formats what comes back; solo does the first and the last and skips the middle, because there is nothing to route to. Both ends were already shared code, which is why none of it had to be reimplemented.</p>
+
+            <h3>What it serves</h3>
+            <div class="table-responsive">
+              <table class="table table-bordered">
+                <thead>
+                  <tr><th>Route</th><th>Solo</th><th>Notes</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td><code>POST /api/generate</code>, <code>/api/chat</code></td><td>✅</td><td>Blocking and streaming (NDJSON).</td></tr>
+                  <tr><td><code>POST /api/embed</code>, <code>/api/embeddings</code></td><td>✅</td><td></td></tr>
+                  <tr><td><code>GET /api/tags</code>, <code>/api/version</code></td><td>✅</td><td><code>/api/tags</code> honours <code>Node:Models:Include/Exclude</code> — the same filter the node reports to a hub.</td></tr>
+                  <tr><td><code>POST /v1/chat/completions</code>, <code>/v1/completions</code></td><td>✅</td><td>Blocking and streaming (SSE).</td></tr>
+                  <tr><td><code>POST /v1/embeddings</code>, <code>GET /v1/models</code></td><td>✅</td><td></td></tr>
+                  <tr><td><code>GET /health</code></td><td>✅</td><td>Open and unauthenticated, like the hub's. Reports <code>mode: "solo"</code>.</td></tr>
+                  <tr><td><code>GET /api/status</code></td><td>⚠️</td><td>A <strong>smaller, different</strong> document with a <code>mode</code> discriminator — one node, its models, its in-flight count. No fleet metrics.</td></tr>
+                  <tr><td><code>X-InferHub-Retrieve</code> header</td><td>❌</td><td><strong>501</strong>, naming the limitation. See below.</td></tr>
+                  <tr><td><code>/api/collections/*</code>, <code>/api/vector/*</code>, <code>/api/admin/*</code>, <code>/metrics</code>, <code>/console</code></td><td>❌</td><td><code>404</code> — all need a fleet or a vector store.</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p><code>/api/status</code> deliberately does not return the hub's document with zeros in the fleet fields: a dashboard reading <code>nodesEvicted: 0</code> from a process that has no concept of nodes is worse than one that gets a 404 for a key that was never there.</p>
+
+            <h3>Three things it deliberately will not do</h3>
+            <p><strong>No retrieval.</strong> RAG lives on the vector store in the coordinator, and pulling that into the node would mean pulling a Postgres driver and a PDF parser into an image that is deliberately free of both. An <code>X-InferHub-Retrieve</code> header against a solo node returns a clean <strong>501</strong> naming the limitation — and that refusal is the feature. A developer moving a working RAG app onto one machine and getting confident, fluent, silently <em>ungrounded</em> answers files a bug three weeks later that begins "the model got worse".</p>
+            <p><strong>No admin API and no console.</strong> There is one node and you are sitting at it. Model management stays hub-driven; in solo mode it is <code>ollama pull</code> in the terminal you already have open.</p>
+            <p><strong>It is not a second kind of coordinator.</strong> A solo node serves its own clients and nothing else. Nothing about the fleet changes — the coordinator gained no code, meshed nodes behave exactly as before, and the outbound-only rule that lets a GPU box sit behind NAT with no inbound rule is untouched. Solo mode adds a surface for <em>your own</em> clients, which is why it needs no hub at all.</p>
+
+            <h3>Auth, and the one place it refuses to boot</h3>
+            <p>Off by default, and loopback when on. Loopback callers need no key (matching the hub's <code>Auth:RequireAuthForLoopback</code>), so local <code>curl</code> just works.</p>
+            <div class="alert alert-warning" role="alert">
+              <strong>A non-loopback address with no keys fails startup, naming the key.</strong> That is stricter than InferHub usually is about somebody else's network, and the asymmetry is intentional: an unauthenticated inference endpoint hands arbitrary compute on your GPU to anyone who can reach the port, and the first sign of it is a bill or a melted card. <code>LocalApi:AllowAnonymous=true</code> is the explicit override for a trusted network, and it warns on every boot.
+            </div>
+            <p>This bites in a container by design — the image binds a wildcard, so a containerised solo node needs a key:</p>
+            <pre><code class="bash">docker run -e LocalApi__Enabled=true -e Coordinator__Enabled=false \
+           -e LocalApi__ApiKeys__0=your-key \
+           -e Ollama__Endpoint=http://host.docker.internal:11434/ \
+           -p 5081:8080 ghcr.io/dev-art-solutions/inferhub-node:latest</code></pre>
+
+            <h3>Concurrency</h3>
+            <p><code>Node:MaxConcurrency</code> has always been <em>advisory</em> — a number the coordinator's router respects. In solo mode nobody is respecting it, so it is <strong>enforced locally</strong>: over the cap a request waits up to <code>LocalApi:MaxWaitSeconds</code> and then gets <code>503</code> + <code>Retry-After</code>, the same status and header as the hub's queue, so existing client retry logic behaves identically. Unset means unbounded, exactly as it does today.</p>
+
+            <h3>Both at once</h3>
+            <p><code>Coordinator:Enabled</code> and <code>LocalApi:Enabled</code> are independent. A fleet node with the local API on is legitimate — useful for curling a node directly while debugging. Both <strong>off</strong> is a startup failure naming both keys: a node that neither joins a mesh nor serves anyone is a typo. The full key list is in <a href="#idocs_config_node">Node configuration</a>.</p>
           </section>
 
           <hr class="divider">
@@ -504,7 +578,14 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
                   <tr><th>Key</th><th>Default</th><th>Purpose</th></tr>
                 </thead>
                 <tbody>
-                  <tr><td><code>Coordinator:Url</code></td><td><code>http://localhost:5080/</code></td><td>Coordinator base URL (must be absolute http/https).</td></tr>
+                  <tr><td><code>Coordinator:Enabled</code></td><td><code>true</code></td><td><strong>v3.5+</strong> — <code>false</code> runs the node with no mesh at all: no connection, no heartbeat, and <strong>no required URL</strong>. Off together with <code>LocalApi:Enabled</code> fails startup. See <a href="#idocs_solo">Solo mode</a>.</td></tr>
+                  <tr><td><code>Coordinator:Url</code></td><td><code>http://localhost:5080/</code></td><td>Coordinator base URL (must be absolute http/https). Not required when <code>Coordinator:Enabled=false</code>.</td></tr>
+                  <tr><td><code>LocalApi:Enabled</code></td><td><code>false</code></td><td><strong>v3.5+</strong> — serve the hub's client-facing API from this node. See <a href="#idocs_solo">Solo mode</a>.</td></tr>
+                  <tr><td><code>LocalApi:Urls</code></td><td><code>http://localhost:5081</code></td><td><strong>v3.5+</strong> — where the local API listens. Deliberately not 5080, so a hub and a node can share a laptop.</td></tr>
+                  <tr><td><code>LocalApi:ApiKeys</code></td><td><code>[]</code></td><td><strong>v3.5+</strong> — bearer tokens for the local API. <strong>Required</strong> on a non-loopback address unless <code>AllowAnonymous</code>; the node refuses to start otherwise.</td></tr>
+                  <tr><td><code>LocalApi:AllowAnonymous</code></td><td><code>false</code></td><td><strong>v3.5+</strong> — explicit consent to serve a non-loopback address with no keys. Warns on every boot.</td></tr>
+                  <tr><td><code>LocalApi:RequireAuthForLoopback</code></td><td><code>false</code></td><td><strong>v3.5+</strong> — same meaning as the coordinator's key of that name.</td></tr>
+                  <tr><td><code>LocalApi:MaxWaitSeconds</code></td><td><code>30</code></td><td><strong>v3.5+</strong> — how long a request waits for a concurrency slot before <code>503</code>. Only bites when <code>Node:MaxConcurrency</code> is set.</td></tr>
                   <tr><td><code>Coordinator:Endpoints</code></td><td><code>[]</code></td><td><strong>v3.0+</strong> — HA coordinator list. Empty = just <code>Url</code>. The node walks the list on each failed connect; a standby refuses the handshake, so rotation is how it finds the leader. See <a href="#idocs_ha">High availability</a>.</td></tr>
                   <tr><td><code>Coordinator:EnrollmentSecret</code></td><td><em>(empty)</em></td><td>Shared secret matching the coordinator's <code>Auth:NodeEnrollmentSecret</code>.</td></tr>
                   <tr><td><code>Coordinator:HeartbeatInterval</code></td><td><code>00:00:10</code></td><td>How often the node pings the coordinator.</td></tr>
@@ -1486,7 +1567,8 @@ var doc = record.Payload.As(MyJsonContext.Default.Doc);</code></pre>
 		============================ -->
           <section id="idocs_changelog">
             <h2>Roadmap &amp; status</h2>
-            <p>InferHub <strong>3.4</strong> turns to the node, which until now sat in the fleet as a passive victim of its own backend. Ollama sometimes <em>wedges</em> — the process alive, the port still accepting connections, nothing ever answering — and that quietly took a whole node out of the fleet until a human noticed. The node now probes its local Ollama and brings it back, and the distinction between the two failures turns out to matter: connection refused means start it; accepts-but-never-answers means stop it first, because <code>start</code> on a wedged process fails on a port that is already bound and the log then blames the wrong thing. Restarts are budgeted — three per ten minutes, then it stops and says so — because a supervisor that restarts a server every fifteen seconds never lets a model finish loading. It keeps probing after it gives up, so a recovery is still picked up on its own. It will not touch a shared or remote Ollama (that one isn't ours to bounce), installing Ollama where it is missing is a separate opt-in with the exact command logged before it runs, and it is off by default. Still <strong>zero new dependencies</strong>. See <a href="#idocs_node_supervisor">Ollama supervisor</a>.</p>
+            <p>InferHub <strong>3.5</strong> drops the requirement to run a fleet at all. Until now there was one deployment shape — a coordinator somewhere always-on and nodes dialling out to it — which is right for a fleet and pure overhead for one machine. Putting an OpenAI-compatible endpoint in front of a local Ollama meant a coordinator, a URL, an enrollment secret and two processes, so that one client could reach one backend. The node now serves the same API itself, and moving a client between them is one changed <code>base_url</code> and nothing else: same bodies, same responses, same streaming, same errors, both dialects, tool calls and vision included. It is the hub's formatting layer sitting on the node's executor with the routing layer removed, so almost none of it is new code. Keeping the two from drifting is the part that needed care — everything that turns a result into text is now shared, and a parity test drives identical requests through both hosts over real HTTP and compares what the client actually receives (we broke one side on purpose to confirm it fails). No retrieval in solo mode: a retrieval header gets a clean <strong>501</strong> rather than a silently ungrounded answer. Off by default, loopback when on, refuses to serve a LAN without a key, and still <strong>zero new dependencies</strong>. See <a href="#idocs_solo">Solo mode</a>.</p>
+            <p>That builds on <strong>3.4</strong>, which turns to the node, which until now sat in the fleet as a passive victim of its own backend. Ollama sometimes <em>wedges</em> — the process alive, the port still accepting connections, nothing ever answering — and that quietly took a whole node out of the fleet until a human noticed. The node now probes its local Ollama and brings it back, and the distinction between the two failures turns out to matter: connection refused means start it; accepts-but-never-answers means stop it first, because <code>start</code> on a wedged process fails on a port that is already bound and the log then blames the wrong thing. Restarts are budgeted — three per ten minutes, then it stops and says so — because a supervisor that restarts a server every fifteen seconds never lets a model finish loading. It keeps probing after it gives up, so a recovery is still picked up on its own. It will not touch a shared or remote Ollama (that one isn't ours to bounce), installing Ollama where it is missing is a separate opt-in with the exact command logged before it runs, and it is off by default. Still <strong>zero new dependencies</strong>. See <a href="#idocs_node_supervisor">Ollama supervisor</a>.</p>
             <p>That builds on <strong>3.3</strong>, which finishes the Qdrant track and deletes a caveat every release since 2.2 carried. <code>inferhub-migrate</code> copies a populated vector store between any two providers — <code>local</code> ↔ <code>postgres</code> ↔ <code>qdrant</code> — so switching backends no longer means re-ingesting documents the system deliberately never kept. It refuses a shape mismatch rather than half-filling a collection, never deletes, re-runs converge, and it checks the <em>target's</em> own count before claiming success. Alongside it, Qdrant gains the knobs a real deployment wants: scalar and binary quantization (documented as the memory-for-recall trade it is, measurable with the eval harness rather than asserted), on-disk vectors, payload indexing, and a startup warning if you point at a remote Qdrant with no API key. Running it against a live Qdrant turned up one genuine surprise, now pinned by a test and written down: Qdrant stores the <em>normalised</em> vector in a cosine collection. Still <strong>zero new dependencies</strong>. See <a href="#idocs_migrate">Migrating between providers</a>.</p>
             <p>That builds on <strong>3.0</strong>, which removed the last single point of failure. The always-on coordinator was the mesh's durability anchor by design — which also meant losing it lost everything. Now a second coordinator can run as a <strong>warm standby</strong> over the same Postgres: one holds a lease and serves, the other waits. Kill the active hub and the standby takes the lease, the nodes reconnect to it on their own, and the mesh keeps serving — no manual promotion and no data migration, because the durable state was already shared. A coordinator that cannot <em>prove</em> it still holds the lease demotes itself within the TTL on its own clock, so a partition stops a hub serving rather than letting two of them both answer. Honestly scoped: this is the <em>foundation</em> of the HA track — active-active load sharing and clustering the <code>local</code> vector provider are still to come. Off by default, so single-coordinator setups are byte-identical to 2.13, and still <strong>zero new dependencies</strong> — the lease is one Postgres row. See <a href="#idocs_ha">High availability</a>.</p>
             <p>That builds on <strong>2.13</strong>, which makes the mesh multi-tenant where it counts: RAG collections can now be scoped to a client key. One mesh, several end-clients, and tenant A simply cannot see, ingest into, search or retrieve from tenant B's corpus — on any path, including the inline-RAG header on both surfaces. A collection outside your scope returns a <code>404</code> rather than a <code>403</code>, decided before the store is consulted, so nobody even learns it exists. Provisioning is just ingesting: post into a new collection inside your scope and it is created, with the dimension measured from the embeddings rather than guessed. Admin keys stay fleet-wide. It is an authorization filter over the single vector store — still one source of truth — and a config that never heard of scoping runs exactly as it did in 2.12. See <a href="#idocs_tenancy">Multi-tenant collections</a>.</p>
@@ -1543,10 +1625,11 @@ var doc = record.Payload.As(MyJsonContext.Default.Doc);</code></pre>
                   <tr><td>34</td><td>Qdrant-native hybrid search</td><td><code>v3.2.0</code></td></tr>
                   <tr><td>35</td><td>Qdrant production knobs + provider migration</td><td><code>v3.3.0</code></td></tr>
                   <tr><td>36</td><td>Node supervises its own Ollama</td><td><code>v3.4.0</code></td></tr>
+                  <tr><td>37</td><td>Solo mode — the node serves its own API</td><td><code>v3.5.0</code></td></tr>
                 </tbody>
               </table>
             </div>
-            <p><strong>What's next.</strong> The Qdrant track is finished — a connector (v3.1), server-side hybrid fusion (v3.2), production knobs plus a migration tool (v3.3) — and v3.4 turned to the node, which until then sat in the fleet as a passive victim of its own backend. All four at zero new dependencies. Still on the table: teaching the <strong>coordinator</strong> about backend health as a typed signal (a status column and an alert, rather than a line in the node's log), <strong>active-active</strong> multi-coordinator load sharing and cross-hub replication for the <code>local</code> vector provider, an <strong>OTLP push</strong> exporter behind an explicit opt-in (<code>/metrics</code> is scrape-only today), and a dedicated cross-encoder reranker behind the existing <code>IReranker</code> seam. A fourth vector backend (Milvus, Weaviate) is the same shape as the third and will ship on real demand rather than for the comparison matrix.</p>
+            <p><strong>What's next.</strong> The Qdrant track is finished — a connector (v3.1), server-side hybrid fusion (v3.2), production knobs plus a migration tool (v3.3) — and the last two releases turned to the node: v3.4 gave it a supervisor for its own Ollama, v3.5 let it drop the coordinator entirely. All five at zero new dependencies. Still on the table: <strong>retrieval in solo mode</strong> (v3.5 deliberately refuses rather than answering ungrounded), teaching the <strong>coordinator</strong> about backend health as a typed signal (a status column and an alert, rather than a line in the node's log), <strong>active-active</strong> multi-coordinator load sharing and cross-hub replication for the <code>local</code> vector provider, an <strong>OTLP push</strong> exporter behind an explicit opt-in (<code>/metrics</code> is scrape-only today), and a dedicated cross-encoder reranker behind the existing <code>IReranker</code> seam. A fourth vector backend (Milvus, Weaviate) is the same shape as the third and will ship on real demand rather than for the comparison matrix.</p>
             <p class="text-muted"><small>Made by <a href="https://devart.solutions" target="_blank">Dev Art Solutions</a>. We build production-ready AI and agent systems. Say hello: <a href="mailto:hello@devart.solutions">hello@devart.solutions</a></small></p>
           </section>
 
