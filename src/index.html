@@ -367,7 +367,7 @@ docker exec inferhub ollama pull llama3.2</code></pre>
                 </tbody>
               </table>
             </div>
-            <p>The third is worth explaining: <code>/api/vector/{collection}</code> takes <strong>client-supplied vectors</strong>, so a node with no inference process is still a complete vector store. It reports zero models, which is the honest answer — a chat request fails cleanly instead of hanging. Ingesting <em>documents</em> does need an embedder, so there, either bring your own vectors or point <code>Backend:Type=openai</code> at an embedding upstream elsewhere. And it is still the 4 GB image: if that is all you want, the plain <code>inferhub-node</code> image does <a href="#idocs_solo_rag">solo retrieval</a> identically at 100 MB.</p>
+            <p>The third is worth explaining: <code>/api/vector/{collection}</code> takes <strong>client-supplied vectors</strong>, so a node with no inference process is still a complete vector store. It reports zero models, which is the honest answer — a chat request fails cleanly instead of hanging. Ingesting <em>documents</em> does need an embedder, so there, either bring your own vectors or point <code>Backend:Type=openai</code> at an embedding upstream elsewhere. And it is still the 4 GB image: if that is all you want, the plain <code>inferhub-node</code> image does <a href="#idocs_solo_rag">solo retrieval</a> identically at 340 MB.</p>
 
             <h3>Did it get the card?</h3>
             <p>The node answers that in its first log lines, both ways:</p>
@@ -385,7 +385,7 @@ info: CUDA: no devices visible to this process; inference will run on the CPU.
 
             <h3>What is in it, and what is not</h3>
             <ul>
-              <li><strong>~4 GB</strong>. The plain <code>inferhub-node</code> image is unchanged at ~100 MB and still has no Ollama in it — a bundled flag on one image would have grown every coordinator+node stack by 4 GB for a feature it does not use.</li>
+              <li><strong>~4 GB</strong>. The plain <code>inferhub-node</code> image is unchanged at ~340 MB and still has no Ollama in it — a bundled flag on one image would have grown every coordinator+node stack by 4 GB for a feature it does not use.</li>
               <li><strong>amd64 and NVIDIA only.</strong> No ROCm, no Intel, no Apple; arm64 would mean Jetson-specific bundles.</li>
               <li>The tag is <code>:ollama</code> because the image runs perfectly well without a card. <code>:gpu</code> is an alias for the same digest.</li>
               <li><strong>No model is baked in and none is pulled at boot.</strong> <code>docker exec … ollama pull</code> is the interface, and <strong>a volume at <code>/data</code> is required in practice</strong> — pulled models live in it.</li>
