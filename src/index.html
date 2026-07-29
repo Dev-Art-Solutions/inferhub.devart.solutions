@@ -89,6 +89,7 @@
           </li>
           <li class="nav-item"><a class="nav-link" href="#idocs_quickstart">Quick Start</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_solo">Solo mode — just the node</a></li>
+          <li class="nav-item"><a class="nav-link" href="#idocs_bundled">One container, with or without a GPU</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_openai">OpenAI-compatible API</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_vision">Vision</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_auth">Authentication</a>
@@ -236,6 +237,17 @@ client = OpenAI(base_url="http://hub.example:5080/v1", api_key=KEY)
 # after — just the node
 client = OpenAI(base_url="http://localhost:5081/v1", api_key=KEY)</code></pre>
             <p>See <a href="#idocs_solo">Solo mode</a> for the full surface and the three things it deliberately refuses.</p>
+
+            <h3>One container, with or without a GPU <small class="text-muted">(v3.7+)</small></h3>
+            <p>The same thing again with nothing installed on the host — the bundled image carries Ollama inside it, and uses your card if you pass one in:</p>
+            <pre><code class="bash">docker run -d --name inferhub --gpus all \
+  -e LocalApi__Enabled=true -e Coordinator__Enabled=false \
+  -e LocalApi__ApiKeys__0="$INFERHUB_API_KEY" \
+  -v inferhub:/data -p 5081:8080 \
+  ghcr.io/dev-art-solutions/inferhub-node:ollama
+
+docker exec inferhub ollama pull llama3.2</code></pre>
+            <p>Drop <code>--gpus all</code> and it runs on the CPU instead. See <a href="#idocs_bundled">One container, with or without a GPU</a>.</p>
           </section>
 
           <hr class="divider">
@@ -322,6 +334,67 @@ curl localhost:5081/api/chat -H 'X-InferHub-Retrieve: handbook' \
 
             <h3>Both at once</h3>
             <p><code>Coordinator:Enabled</code> and <code>LocalApi:Enabled</code> are independent. A fleet node with the local API on is legitimate — useful for curling a node directly while debugging. Both <strong>off</strong> is a startup failure naming both keys: a node that neither joins a mesh nor serves anyone is a typo. The full key list is in <a href="#idocs_config_node">Node configuration</a>.</p>
+            <p>Since <strong>v3.7</strong> none of this needs an Ollama on the host either — see <a href="#idocs_bundled">One container, with or without a GPU</a>.</p>
+          </section>
+
+          <hr class="divider">
+
+          <!-- Bundled image
+		============================ -->
+          <section id="idocs_bundled">
+            <h2>One container, with or without a GPU <small class="text-muted">(v3.7+)</small></h2>
+            <p class="lead">Solo mode removed the coordinator. This removes the host install: a second image that carries its own Ollama, uses your card when you pass one in, and your CPU when you do not.</p>
+<pre><code class="bash">docker run -d --name inferhub --gpus all \
+  -e LocalApi__Enabled=true -e Coordinator__Enabled=false \
+  -e LocalApi__ApiKeys__0="$INFERHUB_API_KEY" \
+  -v inferhub:/data -p 5081:8080 \
+  ghcr.io/dev-art-solutions/inferhub-node:ollama
+
+docker exec inferhub ollama pull llama3.2</code></pre>
+            <p>Then point any OpenAI client at <code>http://localhost:5081/v1</code>. The node image never needed a GPU before, because the node never did the computing — it shelled out to an Ollama you installed, reached through <code>host.docker.internal</code> or <code>172.17.0.1</code>, and kept alive yourself. Now there is something in the container that uses the card.</p>
+
+            <h3>Three modes, one image</h3>
+            <p><strong>None of them refuses to start</strong>, and the node says in its first log lines which one it is in.</p>
+            <div class="table-responsive">
+              <table class="table table-bordered">
+                <thead>
+                  <tr><th>Mode</th><th>How</th><th>What runs</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td>GPU inference (+ RAG)</td><td><code>--gpus all</code></td><td>node + Ollama on CUDA</td></tr>
+                  <tr><td>CPU inference (+ RAG)</td><td>leave <code>--gpus</code> off</td><td>node + Ollama on the CPU — right for embedding models and small ones</td></tr>
+                  <tr><td>Vector store only</td><td><code>-e Ollama__Supervisor__Enabled=false</code></td><td>node + corpus, <strong>no Ollama process at all</strong></td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p>The third is worth explaining: <code>/api/vector/{collection}</code> takes <strong>client-supplied vectors</strong>, so a node with no inference process is still a complete vector store. It reports zero models, which is the honest answer — a chat request fails cleanly instead of hanging. Ingesting <em>documents</em> does need an embedder, so there, either bring your own vectors or point <code>Backend:Type=openai</code> at an embedding upstream elsewhere. And it is still the 4 GB image: if that is all you want, the plain <code>inferhub-node</code> image does <a href="#idocs_solo_rag">solo retrieval</a> identically at 100 MB.</p>
+
+            <h3>Did it get the card?</h3>
+            <p>The node answers that in its first log lines, both ways:</p>
+<pre><code class="bash">info: CUDA: 1 device(s) visible to this process — NVIDIA GeForce RTX 3090 Ti.
+info: CUDA: no devices visible to this process; inference will run on the CPU.
+      In a container, pass '--gpus all' to use a card.</code></pre>
+            <p>and on <code>/api/status</code> as a <code>gpu</code> block. For which device a <em>loaded model</em> actually ended up on, <code>docker exec inferhub ollama ps</code> is the ground truth — that is Ollama's own accounting, and it is not something InferHub second-guesses.</p>
+            <div class="alert alert-info" role="alert">
+              <strong>An earlier draft of this release refused to start without a GPU, and that was reversed.</strong> CPU is a legitimate mode, not a misconfiguration — embedding models and small models run on it perfectly well, and a vector store needs no model at all. The danger was never the CPU; it was <em>silence</em>: pulling four gigabytes of CUDA runtime, dropping a <code>--gpus</code> flag, getting two tokens a second and spending the afternoon blaming the model. So the node says what it found instead. <code>Ollama:RequireGpu=true</code> is there when you want the guarantee rather than the report — with no visible device it then fails startup naming <code>--gpus all</code>.
+            </div>
+
+            <h3>The node keeps its own Ollama alive</h3>
+            <p>The container runs two processes: the node as PID 1 and <code>ollama serve</code> as its child. There is no s6, no supervisord and no entrypoint script — the <a href="#idocs_node_supervisor">v3.4 supervisor</a> already knew how to do this job, and it turns out an init system is what it was. It starts Ollama at boot, probes it every 15 seconds on a short deadline of its own, and restarts it when it dies or wedges, under a budget that gives up loudly rather than looping forever.</p>
+            <p>That matters more in a container than on a host, because nothing else in there is watching: a wedged Ollama leaves the container looking alive, <code>/health</code> answering, and every request hanging. Verified the only way it can be — by killing the process inside a running container and watching the node bring it back.</p>
+
+            <h3>What is in it, and what is not</h3>
+            <ul>
+              <li><strong>~4 GB</strong>. The plain <code>inferhub-node</code> image is unchanged at ~100 MB and still has no Ollama in it — a bundled flag on one image would have grown every coordinator+node stack by 4 GB for a feature it does not use.</li>
+              <li><strong>amd64 and NVIDIA only.</strong> No ROCm, no Intel, no Apple; arm64 would mean Jetson-specific bundles.</li>
+              <li>The tag is <code>:ollama</code> because the image runs perfectly well without a card. <code>:gpu</code> is an alias for the same digest.</li>
+              <li><strong>No model is baked in and none is pulled at boot.</strong> <code>docker exec … ollama pull</code> is the interface, and <strong>a volume at <code>/data</code> is required in practice</strong> — pulled models live in it.</li>
+              <li><strong>Ollama's own port is not published.</strong> The container's surface is InferHub's API, which requires a key. <code>-e OLLAMA_HOST=0.0.0.0 -p 11434:11434</code> is yours to decide.</li>
+              <li><strong>Every <code>OLLAMA_*</code> variable passes through</strong> — the supervisor spawns a child that inherits the environment, so <code>OLLAMA_KEEP_ALIVE</code>, <code>OLLAMA_NUM_PARALLEL</code> and the rest need no configuration surface of ours.</li>
+              <li>On <strong>Windows with Docker Desktop</strong> this works through WSL2. Note that <code>/dev/nvidia*</code> does not exist there — InferHub detects the GPU by loading the driver rather than by looking for device nodes, so a passed-through card is found either way.</li>
+            </ul>
+            <p>It is also a good <strong>mesh</strong> node: set <code>Coordinator__Url</code> instead of <code>Coordinator__Enabled=false</code>, and the hub can pull models into it from the console, because the Ollama it manages is genuinely its own.</p>
+<pre><code class="bash">docker compose -f deploy/docker/compose.ollama.yml up -d</code></pre>
           </section>
 
           <hr class="divider">
@@ -638,6 +711,9 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
                   <tr><td><code>Ollama:Supervisor:MaxRestartAttempts</code></td><td><code>3</code></td><td><strong>v3.4+</strong> — restarts allowed per window; past it the node stops restarting, logs once at Error, and keeps probing.</td></tr>
                   <tr><td><code>Ollama:Supervisor:RestartWindow</code></td><td><code>00:10:00</code></td><td><strong>v3.4+</strong> — the window the restart budget applies over.</td></tr>
                   <tr><td><code>Ollama:Supervisor:RestartBackoff</code></td><td><code>00:00:10</code></td><td><strong>v3.4+</strong> — wait before the second and later attempts; doubles each time.</td></tr>
+                  <tr><td><code>Ollama:RequireGpu</code></td><td><code>false</code></td><td><strong>v3.7+</strong> — fail startup when no CUDA device is visible, instead of reporting it and running on the CPU. Off by default <em>including</em> in the <a href="#idocs_bundled">bundled image</a>, which supports CPU on purpose. Turn it on for a node whose whole purpose is the card.</td></tr>
+                  <tr><td><code>Ollama:Supervisor:StartAtBoot</code></td><td><code>false</code></td><td><strong>v3.7+</strong> — start Ollama immediately at startup when nothing is listening, instead of waiting out <code>UnhealthyThreshold</code> probes. For a deployment that <em>owns</em> its Ollama; never applies to a wedge.</td></tr>
+                  <tr><td><code>Ollama:Supervisor:StopOnShutdown</code></td><td><code>false</code></td><td><strong>v3.7+</strong> — stop the Ollama <em>this node spawned</em> when it shuts down; never a service, never one that was already running.</td></tr>
                   <tr><td><code>Ollama:Supervisor:AutoInstall</code></td><td><code>false</code></td><td><strong>v3.4+</strong> — install Ollama when it is genuinely absent. A <em>second</em> opt-in: enabling the supervisor consents to restarting a process, not to running an installer. One attempt per process lifetime.</td></tr>
                   <tr><td><code>Ollama:Supervisor:InstallUrl</code></td><td><em>(official)</em></td><td><strong>v3.4+</strong> — mirror to install from, for an air-gapped or policy-managed fleet.</td></tr>
                   <tr><td><code>Ollama:Supervisor:ServiceName</code></td><td><em>(discover)</em></td><td><strong>v3.4+</strong> — override the discovered service (<code>Ollama</code> / <code>ollama.service</code>).</td></tr>
@@ -693,7 +769,7 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
             <p>Past the budget the node <strong>stops restarting</strong>, says so once at error level, and <strong>keeps probing</strong>. That last part is the point: giving up on restarting is not giving up on recovering. When a human fixes the driver, or the machine finishes whatever it was choking on, the next probe succeeds and the node re-reports its models on its own — immediately, rather than waiting out <code>ModelRefreshInterval</code>.</p>
 
             <h3>Loopback only</h3>
-            <p>If <code>Ollama:Endpoint</code> is not loopback, or <code>Backend:Type=openai</code>, the supervisor logs one line at startup naming why and never probes again. A shared Ollama serving four nodes, restarted because <em>one</em> node's network hiccuped past <code>ProbeTimeout</code>, is a four-node outage caused by the node with the worst link — and an OpenAI-compatible upstream (vLLM, a hosted provider) is not ours to bounce at all. A process may only be restarted by something on the same machine that can see it actually wedged. The rule covers containers for free: a node image cannot restart an Ollama on its host, and its endpoint is by definition not loopback.</p>
+            <p>If <code>Ollama:Endpoint</code> is not loopback, or <code>Backend:Type=openai</code>, the supervisor logs one line at startup naming why and never probes again. A shared Ollama serving four nodes, restarted because <em>one</em> node's network hiccuped past <code>ProbeTimeout</code>, is a four-node outage caused by the node with the worst link — and an OpenAI-compatible upstream (vLLM, a hosted provider) is not ours to bounce at all. A process may only be restarted by something on the same machine that can see it actually wedged. That used to cover containers by having nothing local to reach — a node image could not restart an Ollama on its host, and its endpoint was by definition not loopback. Since <strong>v3.7</strong> the <a href="#idocs_bundled">bundled image</a> runs Ollama <em>inside</em> the container on <code>127.0.0.1</code>, which satisfies the same rule for the right reason: an address inside the container's own network namespace cannot be anybody else's server. There, the supervisor is also the container's init system.</p>
             <p>Where Ollama is installed as a <strong>service</strong>, the node restarts it through <code>sc.exe</code> / <code>systemctl</code> rather than running <code>ollama serve</code> itself — two servers fighting over <code>:11434</code> is a worse outage than the one being fixed, and the one that loses is the one whose logs you are reading. A node service running under a restricted account <strong>cannot</strong> control a machine-wide one; that is reported as one line naming the privilege rather than an "Access is denied" stack trace.</p>
 
             <h3>Auto-install is a second opt-in</h3>
@@ -1658,10 +1734,11 @@ var doc = record.Payload.As(MyJsonContext.Default.Doc);</code></pre>
                   <tr><td>36</td><td>Node supervises its own Ollama</td><td><code>v3.4.0</code></td></tr>
                   <tr><td>37</td><td>Solo mode — the node serves its own API</td><td><code>v3.5.0</code></td></tr>
                   <tr><td>38</td><td>RAG in solo mode — a standalone node retrieves for itself</td><td><code>v3.6.0</code></td></tr>
+                  <tr><td>39</td><td>Bundled node image — Ollama in the container, GPU or CPU</td><td><code>v3.7.0</code></td></tr>
                 </tbody>
               </table>
             </div>
-            <p><strong>What's next.</strong> The Qdrant track is finished — a connector (v3.1), server-side hybrid fusion (v3.2), production knobs plus a migration tool (v3.3) — and the last three releases turned to the node: v3.4 gave it a supervisor for its own Ollama, v3.5 let it drop the coordinator entirely, and v3.6 finished that arc by giving a standalone node the retrieval stack too — by <em>moving</em> it into the shared library rather than copying it. All six at zero new dependencies. Still on the table: teaching the <strong>coordinator</strong> about backend health as a typed signal (a status column and an alert, rather than a line in the node's log), <strong>active-active</strong> multi-coordinator load sharing and cross-hub replication for the <code>local</code> vector provider, an <strong>OTLP push</strong> exporter behind an explicit opt-in (<code>/metrics</code> is scrape-only today), and a dedicated cross-encoder reranker behind the existing <code>IReranker</code> seam. A fourth vector backend (Milvus, Weaviate) is the same shape as the third and will ship on real demand rather than for the comparison matrix.</p>
+            <p><strong>What's next.</strong> The Qdrant track is finished — a connector (v3.1), server-side hybrid fusion (v3.2), production knobs plus a migration tool (v3.3) — and the last four releases turned to the node: v3.4 gave it a supervisor for its own Ollama, v3.5 let it drop the coordinator entirely, v3.6 gave a standalone node the retrieval stack too (by <em>moving</em> it into the shared library rather than copying it), and v3.7 packaged the lot as <a href="#idocs_bundled">one container</a> that carries its own Ollama and runs on your card, your CPU, or neither. All seven at zero new dependencies. Still on the table: teaching the <strong>coordinator</strong> about backend health as a typed signal (a status column and an alert, rather than a line in the node's log), <strong>active-active</strong> multi-coordinator load sharing and cross-hub replication for the <code>local</code> vector provider, an <strong>OTLP push</strong> exporter behind an explicit opt-in (<code>/metrics</code> is scrape-only today), and a dedicated cross-encoder reranker behind the existing <code>IReranker</code> seam. A fourth vector backend (Milvus, Weaviate) is the same shape as the third and will ship on real demand rather than for the comparison matrix.</p>
             <p class="text-muted"><small>Made by <a href="https://devart.solutions" target="_blank">Dev Art Solutions</a>. We build production-ready AI and agent systems. Say hello: <a href="mailto:hello@devart.solutions">hello@devart.solutions</a></small></p>
           </section>
 
