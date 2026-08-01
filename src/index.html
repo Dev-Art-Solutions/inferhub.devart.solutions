@@ -92,6 +92,7 @@
           <li class="nav-item"><a class="nav-link" href="#idocs_bundled">One container, with or without a GPU</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_capabilities">What a node is for</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_tools">Tools on a node</a></li>
+          <li class="nav-item"><a class="nav-link" href="#idocs_audio">Speech in, speech out</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_openai">OpenAI-compatible API</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_vision">Vision</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_auth">Authentication</a>
@@ -250,6 +251,19 @@ client = OpenAI(base_url="http://localhost:5081/v1", api_key=KEY)</code></pre>
 
 docker exec inferhub ollama pull llama3.2</code></pre>
             <p>Drop <code>--gpus all</code> and it runs on the CPU instead. See <a href="#idocs_bundled">One container, with or without a GPU</a>.</p>
+
+            <h3>…and it can transcribe <small class="text-muted">(v3.10+)</small></h3>
+            <p>The same line against the <code>:tools</code> tag brings Whisper and Piper with it:</p>
+            <pre><code class="bash">docker run -d --name inferhub --gpus all \
+  -e LocalApi__Enabled=true -e Coordinator__Enabled=false \
+  -e LocalApi__ApiKeys__0="$INFERHUB_API_KEY" \
+  -v inferhub:/data -p 5081:8080 \
+  ghcr.io/dev-art-solutions/inferhub-node:tools
+
+curl http://localhost:5081/v1/audio/transcriptions \
+  -H "Authorization: Bearer $INFERHUB_API_KEY" \
+  -F file=@meeting.m4a -F model=whisper-small</code></pre>
+            <p>Without <code>--gpus all</code> it transcribes on the CPU, and says so in its first log line. See <a href="#idocs_audio">Speech in, speech out</a>.</p>
           </section>
 
           <hr class="divider">
@@ -486,6 +500,107 @@ curl -s localhost:5080/v1/models | jq '.data[] | {id, capabilities}'
 
             <h3>Upgrading</h3>
             <p>Nothing to do. With <code>Tools:Enabled</code> false — the default — the node registers a no-op runtime, spawns nothing, reads no manifest directory and declares no tool capability. There is no wire change for a fleet that is not using this.</p>
+
+            <h3>The two shipped workers <span class="badge bg-secondary">v3.10+</span></h3>
+            <p><code>whisper_worker.py</code> and <code>piper_worker.py</code>, with their manifests, are what the <code>inferhub-node:tools</code> image runs — and they are the worked examples, because between them they use every part of the protocol: a file in, a file out, capability narrowing at handshake, a structured refusal with a code, and stderr as the log. See <a href="#idocs_audio">Speech in, speech out</a>.</p>
+          </section>
+
+          <hr class="divider">
+
+          <!-- Speech in, speech out
+		============================ -->
+          <section id="idocs_audio">
+            <h2>Speech in, speech out <span class="badge bg-secondary">v3.10+</span></h2>
+            <p class="lead">Two endpoints, on OpenAI's audio API exactly, against your own hardware.</p>
+
+<pre><code class="bash">curl http://localhost:5080/v1/audio/transcriptions \
+  -H "Authorization: Bearer $KEY" \
+  -F file=@meeting.m4a -F model=whisper-small -F response_format=verbose_json
+
+curl http://localhost:5080/v1/audio/speech \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"model":"en_US-amy-medium","input":"InferHub can talk now.","response_format":"wav"}' \
+  --output out.wav</code></pre>
+
+            <p>Every SDK in every language already speaks this, so pointing an existing app at your own GPU is a base-URL change. Inventing <code>/api/tts</code> would have been a second dialect whose only merit is that we designed it — and unlike chat there is no <em>Ollama</em> audio dialect to be the other side of a translation, so there is exactly one client shape here.</p>
+            <p>The same two routes are served by a <a href="#idocs_solo">standalone node with no coordinator at all</a>, and by one container:</p>
+
+<pre><code class="bash">docker run -d --gpus all \
+  -e LocalApi__Enabled=true -e Coordinator__Enabled=false \
+  -e LocalApi__ApiKeys__0="$KEY" -v inferhub:/data -p 5081:8080 \
+  ghcr.io/dev-art-solutions/inferhub-node:tools</code></pre>
+
+            <p>Leave <code>--gpus</code> off and it runs on the CPU — roughly real time for <code>whisper-small</code> on a modern core — and the worker's first log line says which one it got. That line exists because the alternative is four gigabytes of CUDA runtime, a dropped flag, two tokens a second, and an afternoon spent blaming the model.</p>
+
+            <h3>A third image, and the other three are untouched</h3>
+            <div class="table-responsive">
+              <table class="table table-sm">
+                <thead><tr><th>Tag</th><th>Size</th><th>Arch</th><th>What is in it</th></tr></thead>
+                <tbody>
+                  <tr><td><code>inferhub-coordinator</code></td><td>~120 MB</td><td>amd64 + arm64</td><td>The hub</td></tr>
+                  <tr><td><code>inferhub-node</code></td><td>~340 MB</td><td>amd64 + arm64</td><td>A node. No inference engine</td></tr>
+                  <tr><td><code>inferhub-node:ollama</code></td><td>~4 GB</td><td>amd64</td><td>The same node with Ollama inside it</td></tr>
+                  <tr><td><code>inferhub-node:tools</code></td><td>~6 GB</td><td>amd64</td><td>The same again, plus Python, <code>faster-whisper</code> and <code>piper</code></td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p>The first three are <strong>unchanged</strong> by v3.10. The Python is ~1.5 GB and it is in a layer whether a flag is on or off, so a flag would have grown every existing coordinator+node stack for a feature it does not use. An operator on the plain image can still run these workers by installing Python themselves and pointing a manifest at it — <code>python/requirements-tools.txt</code> is exactly what the image installs, and the runtime does not care where the interpreter came from.</p>
+            <p>Zero new dependencies again: <code>faster-whisper</code> and <code>piper</code> are a <code>pip install</code> in one Dockerfile, not packages anything compiles against. No <code>.csproj</code> changed.</p>
+
+            <h3>Formats, and nothing silently substituted</h3>
+            <div class="table-responsive">
+              <table class="table table-sm">
+                <tbody>
+                  <tr><td>Transcription</td><td><code>json</code> (default), <code>text</code>, <code>srt</code>, <code>vtt</code>, <code>verbose_json</code></td></tr>
+                  <tr><td>Speech</td><td><code>wav</code>, <code>pcm</code> natively; <code>mp3</code>, <code>opus</code>, <code>flac</code> where the worker has <code>ffmpeg</code> — the <code>:tools</code> image does</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p>A worker always answers with the verbose shape — text, segments, duration — and <strong>the edge formats</strong>. <code>srt</code> and <code>vtt</code> are string formatting on the hub, which means no worker author ever writes a subtitle timestamp, in any language, and two workers cannot disagree about where the comma goes.</p>
+            <p><strong>A format that cannot be produced is a <code>400</code> naming the ones that can.</strong> Never a substitution: a caller who asked for mp3 and got a wav has a corrupted file with a confident content type, and finds out in a media player three days later. A worker with no encoder states <em>which kind</em> of failure it was as a field, and the edge renders the status from that — never by reading the message.</p>
+
+            <h3>No weights in the image, and a third opt-in for fetching them</h3>
+            <p>Whisper downloads its weights on first use, into <code>/data/tools/hf</code> on the volume, so it happens once rather than once per <code>docker run</code>. That download is a reach onto the internet from a GPU box, so it sits behind <code>Tools:AllowModelDownload</code> — default <strong>false</strong>, <strong>true</strong> in the <code>:tools</code> image, because choosing that image <em>is</em> the consent, exactly as choosing <code>:ollama</code> is the consent to run an Ollama.</p>
+            <div class="table-responsive">
+              <table class="table table-sm">
+                <thead><tr><th>Key</th><th>Consents to</th></tr></thead>
+                <tbody>
+                  <tr><td><code>Tools:Enabled</code></td><td>running tools at all</td></tr>
+                  <tr><td><code>Tools:Allowed</code></td><td>running <em>these</em> tools — the ceiling a coordinator will never be able to raise</td></tr>
+                  <tr><td><code>Tools:AllowModelDownload</code></td><td>one of them reaching the internet from a box you may have air-gapped</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p>With the third off, a worker that needs missing weights fails the <strong>job</strong> with the exact pre-fetch command in the message, and the node keeps serving everything else including chat.</p>
+            <p><strong>Voices are not fetched at all</strong>, because no default voice is right for everyone and a confident answer in the wrong language is worse than a refusal. Drop a Piper <code>.onnx</code> + <code>.onnx.json</code> pair into <code>/data/tools/voices</code>; the model name is the file's stem.</p>
+
+<pre><code class="bash">docker exec inferhub sh -c 'mkdir -p /data/tools/voices &amp;&amp; cd /data/tools/voices &amp;&amp; \
+  curl -fsSLO https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx &amp;&amp; \
+  curl -fsSLO https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx.json'</code></pre>
+
+            <h3>None of it is kept</h3>
+            <p>The retention rule at its most literal: a transcription request is a recording of somebody's voice, and the answer is what they said.</p>
+            <ul>
+              <li>The hub buffers the upload for the dispatch and drops it. No temp file, no cache.</li>
+              <li>The node writes it into a per-request scratch directory deleted in a <code>finally</code> — after success and after failure.</li>
+              <li><strong>Nothing containing audio bytes or transcript text is logged, at any level.</strong> The line for a transcription carries the model, the duration and the outcome. Not even the filename you chose: <code>board-meeting.m4a</code> is metadata about somebody's day and is not needed to run a fleet.</li>
+              <li>The usage ledger gains a <strong>duration</strong>, never a transcript.</li>
+            </ul>
+            <p>The test runs a transcription through a real mesh with a capturing logger and fails if a known phrase from the fixture appears anywhere in the log or the ledger.</p>
+
+            <h3>Metered in the unit the work is actually in</h3>
+            <p>Audio has no token count, so metering it as tokens would mean inventing a number. A usage row now carries <code>units</code> and a <code>unitKind</code> — <code>tokens</code>, <code>audio_seconds</code> or <code>characters</code>. The token fields are untouched, the Postgres migration is additive and rewrites nothing, and a row written by v3.9 still means exactly what it meant.</p>
+<pre><code class="json">"Limits": { "AudioSecondsPerDay": 3600, "CharactersPerDay": 200000 }</code></pre>
+            <p>Separate budgets, each consuming only its own unit — a client whose only limit is <code>TokensPerDay</code> could otherwise transcribe a library for free. Over one is the same <code>402</code> + <code>Retry-After</code> to UTC midnight as the token budget, in the OpenAI envelope on <code>/v1</code>.</p>
+
+            <h3>A busy transcription does not slow your chat</h3>
+            <p><code>maxWorkers</code> defaults to 1: a second Whisper process on the same card is two copies of the weights and an out-of-memory error at the worst possible moment. But because routing has been per <code>(capability, model)</code> since <a href="#idocs_capabilities">v3.8</a>, <strong>a node busy transcribing is still a candidate for chat</strong>. That is the earlier release paying for itself, and it is worth stating because nobody can see it working — the failure it prevents is "my chat got slow when someone uploaded a podcast".</p>
+
+            <h3>Deliberately not in this release</h3>
+            <p><strong>Streaming TTS</strong> — chunked audio needs a concatenable format and a client-side contract the OpenAI dialect only recently grew; v3.10 returns complete audio. <strong>Diarization, alignment and voice cloning</strong> — <code>verbose_json</code> carries the segments and timestamps Whisper produces anyway, and speaker labels it does not produce are not invented. <strong><code>/v1/audio/translations</code></strong> — one flag on the same worker, and it can land whenever somebody asks; shipping an untested surface to look complete is how a feature list starts lying.</p>
+
+            <h3>Upgrading</h3>
+            <p>Nothing to do. <code>Tools:*</code> is off by default, the audio routes answer a <code>503</code> naming the capability until a worker provides it, and a deployment that changes no config behaves identically to v3.9.</p>
           </section>
 
           <hr class="divider">
@@ -798,6 +913,7 @@ dotnet user-secrets --project src/InferHub.Node set "Coordinator:EnrollmentSecre
                   <tr><td><code>Tools:ScratchDirectory</code></td><td><code>data/tools/scratch</code></td><td><strong>v3.9+</strong> — per-request working directories, deleted in a <code>finally</code> after success and after failure. <code>/data/tools/scratch</code> in the images.</td></tr>
                   <tr><td><code>Tools:MaxAttachmentBytes</code></td><td><code>26214400</code></td><td><strong>v3.9+</strong> — 25 MB, matching the OpenAI audio API. Over it is a <code>413</code> at the edge naming the limit. Also read by the coordinator for its own edge.</td></tr>
                   <tr><td><code>Tools:QueueMaxWaitSeconds</code></td><td><code>30</code></td><td><strong>v3.9+</strong> — how long a request waits for a free worker before <code>503</code> + <code>Retry-After</code>.</td></tr>
+                  <tr><td><code>Tools:AllowModelDownload</code></td><td><code>false</code></td><td><strong>v3.10+</strong> — may a worker fetch weights it does not have? The <em>third</em> consent: <code>Enabled</code> is the feature, <code>Allowed</code> is these tools, and this is one of them reaching the internet from a box you may have air-gapped. <code>true</code> in the <code>:tools</code> image. With it off, a worker that needs missing weights fails the <strong>job</strong> naming this key and the pre-fetch command.</td></tr>
                   <tr><td><code>Tools:MaxStartAttempts</code></td><td><code>3</code></td><td><strong>v3.9+</strong> — start attempts per <code>RestartWindow</code> before a pool gives up, withdraws its capabilities and drops to probing. With <code>RestartWindow</code> (<code>00:10:00</code>), <code>RestartBackoff</code> (<code>00:00:10</code>, doubling), <code>RecoveryProbeInterval</code> (<code>00:01:00</code>) and <code>MaintenanceInterval</code> (<code>00:00:30</code>).</td></tr>
                   <tr><td><code>Backend:Type</code></td><td><code>ollama</code></td><td>Inference backend selector: <code>ollama</code> or <code>openai</code> (<strong>v2.4+</strong>). See <a href="#idocs_backends">Inference backends</a>.</td></tr>
                   <tr><td><code>Ollama:Endpoint</code></td><td><code>http://localhost:11434/</code></td><td>Local Ollama URL (absolute http/https). Consumed via <a href="https://ollamaclient.devart.solutions" target="_blank">OllamaClient</a>. Used when <code>Backend:Type=ollama</code>.</td></tr>
@@ -1772,7 +1888,8 @@ var doc = record.Payload.As(MyJsonContext.Default.Doc);</code></pre>
 		============================ -->
           <section id="idocs_changelog">
             <h2>Roadmap &amp; status</h2>
-            <p>InferHub <strong>3.9</strong> gives a node a second kind of engine: it can start, supervise and talk to <strong>child processes</strong> that do work its inference backend cannot — transcription, speech, anything you write. The reason it is a subprocess and not a library is the decision worth reading: the libraries are Python, and an in-process binding pins the node to a CPython ABI, forecloses the tool that is a Go binary or an <code>ffmpeg</code> call, and — the one that would have hurt — makes <strong>one bad <code>import</code> take the node down</strong>, because a segfault in a native extension is not an exception you catch, it is a process that vanishes taking every in-flight job with it. A child that segfaults is a log line and a restart. Every level has a deadline and a bound, a pool that fails to start three times in ten minutes <em>withdraws its capabilities</em> so the coordinator stops routing that work there and keeps probing so a fix needs no restart, and a tool failure is a failed <em>job</em> — the node is still serving inference afterwards, which is what the suite asserts after every failure mode. Running code is opted into twice: <code>Tools:Enabled</code> for the feature, <code>Tools:Allowed</code> for the specific manifest, and the second is the ceiling v3.11's coordinator will never be able to raise. It is <strong>not a sandbox</strong>, and the docs say so in those words — though a worker does <em>not</em> inherit the node's environment, so no enrollment secret reaches it. v3.9 ships the machinery and no tool: the suite drives a real child process that echoes, so Whisper lands in v3.10 onto something already proven. Off by default and still <strong>zero new dependencies</strong>. See <a href="#idocs_tools">Tools on a node</a>.</p>
+            <p>InferHub <strong>3.10</strong> puts speech on the runtime the last release built: <code>POST /v1/audio/transcriptions</code> and <code>POST /v1/audio/speech</code>, on OpenAI's audio API exactly, against your own hardware — so an app that already transcribes moves over with a base-URL change. Whisper and Piper run as supervised child processes, on a <strong>third image</strong> (<code>inferhub-node:tools</code>, ~6 GB) rather than a flag on the existing ones, because the Python is in a layer whether a flag is on or off and every coordinator+node stack should not grow for a feature it does not use — the plain and <code>:ollama</code> images are byte-for-byte unchanged. It runs on a card or on a CPU, and the worker's first log line says which, because four gigabytes of CUDA runtime and a dropped <code>--gpus</code> flag is otherwise an afternoon spent blaming the model. A worker always returns text + segments + duration and the <em>edge</em> formats <code>json</code>/<code>text</code>/<code>srt</code>/<code>vtt</code>/<code>verbose_json</code>, so no worker author ever writes a subtitle timestamp; a format that cannot be produced is a <code>400</code> naming the ones that can, never a wav labelled <code>audio/mpeg</code>. Weights download on first use behind a <em>third</em> opt-in (<code>Tools:AllowModelDownload</code>) because that is a GPU box reaching the internet, and with it off the refusal carries the exact pre-fetch command. <strong>None of the audio is kept</strong>: no temp file, nothing with audio bytes or transcript text in any log at any level — not even the filename you uploaded — and the usage ledger gains a <em>duration</em>, never a transcript, metered in <code>audio_seconds</code> against its own daily budget because a token budget cannot bound a recording. And because 3.8 made routing per capability, a node busy transcribing is still a candidate for chat. Still <strong>zero new dependencies</strong>. See <a href="#idocs_audio">Speech in, speech out</a>.</p>
+            <p>That builds on <strong>3.9</strong>, which gives a node a second kind of engine: it can start, supervise and talk to <strong>child processes</strong> that do work its inference backend cannot — transcription, speech, anything you write. The reason it is a subprocess and not a library is the decision worth reading: the libraries are Python, and an in-process binding pins the node to a CPython ABI, forecloses the tool that is a Go binary or an <code>ffmpeg</code> call, and — the one that would have hurt — makes <strong>one bad <code>import</code> take the node down</strong>, because a segfault in a native extension is not an exception you catch, it is a process that vanishes taking every in-flight job with it. A child that segfaults is a log line and a restart. Every level has a deadline and a bound, a pool that fails to start three times in ten minutes <em>withdraws its capabilities</em> so the coordinator stops routing that work there and keeps probing so a fix needs no restart, and a tool failure is a failed <em>job</em> — the node is still serving inference afterwards, which is what the suite asserts after every failure mode. Running code is opted into twice: <code>Tools:Enabled</code> for the feature, <code>Tools:Allowed</code> for the specific manifest, and the second is the ceiling v3.11's coordinator will never be able to raise. It is <strong>not a sandbox</strong>, and the docs say so in those words — though a worker does <em>not</em> inherit the node's environment, so no enrollment secret reaches it. v3.9 ships the machinery and no tool: the suite drives a real child process that echoes, so Whisper lands in v3.10 onto something already proven. Off by default and still <strong>zero new dependencies</strong>. See <a href="#idocs_tools">Tools on a node</a>.</p>
             <p>That builds on <strong>3.8</strong>, which starts this track by fixing an assumption nobody had written down: that every model on a node does the same kind of work. A node used to advertise a flat list of model names, so a box holding only <code>nomic-embed-text</code> was a perfectly good candidate for a chat request naming it, and the error came back from the backend after a dispatch. Routing now asks <code>(capability, model)</code> — what a node can <em>do</em>, not only what it holds. Nothing is guessed: Ollama does not say what a model is for, and a name heuristic would be a lookup table that is wrong for somebody, so a node declares chat + embed over what its backend reports and one subtractive key (<code>Node:Capabilities:Disabled</code>) says "this box is for embeddings". A capability nobody provides is a <code>503</code> with <code>Retry-After</code>, the same shape as "everyone is busy"; a model nobody holds is still the old <code>404</code>. Solo mode enforces the same key itself, so it cannot mean two things. A v3.7 node against a v3.8 coordinator is routed exactly as before, so a fleet upgrades one box at a time — and still <strong>zero new dependencies</strong>. This is the seam the next releases need: a tool runtime that lets a node drive a supervised subprocess, and then speech-to-text and text-to-speech. See <a href="#idocs_capabilities">What a node is for</a>.</p>
             <p>That builds on <strong>3.7</strong>, which puts Ollama <em>inside</em> the node image: one <code>docker run</code> with <code>--gpus all</code> and a complete inference endpoint comes up, or without it and the same image runs on the CPU, or with the supervisor off and it is a vector store with no inference process at all. The base image did not change — the CUDA runtime ships in Ollama's own tarball and the driver is injected by <code>--gpus</code> — and the process manager from 3.4 turned out to be the container's init system, restarts included. See <a href="#idocs_bundled">One container, with or without a GPU</a>.</p>
             <p>That builds on <strong>3.6</strong>, which gives a standalone node the retrieval stack. v3.5 let one machine drop the coordinator entirely, but stopped one step short: a retrieval header got a clean <strong>501</strong>, because the vector store lived in the hub. That is now the deployment RAG actually fits — a folder of documents and one GPU — so a node with no coordinator ingests, indexes and grounds its own answers, over the same headers, the same augmented prompt and the same <code>X-InferHub-Sources</code> citations, in vector, keyword and hybrid modes. None of it was reimplemented: the whole pure core moved into the shared library and both hosts compose the same objects, because retrieval has a dozen decisions in it and every one diverging silently produces <em>plausible</em> answers. The interesting part is what it refuses to do — turn retrieval on while the node is still in a mesh and it will not start, naming both keys, because a meshed node already holds replicas derived from its hub and a second authoritative corpus in the same process is two sources of truth for one collection name. It refuses rather than quietly switching the feature off, since what would be switched off is <em>grounding</em>. No PDF on a node (a clean <strong>415</strong>, never a bad extraction) and no external vector databases. Off by default, and still <strong>zero new dependencies</strong>. See <a href="#idocs_solo_rag">Retrieval on a standalone node</a>.</p>
@@ -1839,10 +1956,11 @@ var doc = record.Payload.As(MyJsonContext.Default.Doc);</code></pre>
                   <tr><td>39</td><td>Bundled node image — Ollama in the container, GPU or CPU</td><td><code>v3.7.0</code></td></tr>
                   <tr><td>40</td><td>Capabilities — a node declares what it can <em>do</em></td><td><code>v3.8.0</code></td></tr>
                   <tr><td>41</td><td>Tool runtime — supervised subprocess workers</td><td><code>v3.9.0</code></td></tr>
+                  <tr><td>42</td><td>Speech to text and text to speech — the OpenAI audio API</td><td><code>v3.10.0</code></td></tr>
                 </tbody>
               </table>
             </div>
-            <p><strong>What's next.</strong> The Qdrant track is finished — a connector (v3.1), server-side hybrid fusion (v3.2), production knobs plus a migration tool (v3.3) — and the last four releases turned to the node: v3.4 gave it a supervisor for its own Ollama, v3.5 let it drop the coordinator entirely, v3.6 gave a standalone node the retrieval stack too (by <em>moving</em> it into the shared library rather than copying it), and v3.7 packaged the lot as <a href="#idocs_bundled">one container</a> that carries its own Ollama and runs on your card, your CPU, or neither. v3.8 and v3.9 opened the current track: routing on <code>(capability, model)</code>, and then a <a href="#idocs_tools">tool runtime</a> that lets a node drive supervised child processes. Next on it: speech-to-text and text-to-speech behind the OpenAI audio API, on a <code>:tools</code> image, in v3.10. All of it at zero new dependencies. Still on the table: teaching the <strong>coordinator</strong> about backend health as a typed signal (a status column and an alert, rather than a line in the node's log), <strong>active-active</strong> multi-coordinator load sharing and cross-hub replication for the <code>local</code> vector provider, an <strong>OTLP push</strong> exporter behind an explicit opt-in (<code>/metrics</code> is scrape-only today), and a dedicated cross-encoder reranker behind the existing <code>IReranker</code> seam. A fourth vector backend (Milvus, Weaviate) is the same shape as the third and will ship on real demand rather than for the comparison matrix.</p>
+            <p><strong>What's next.</strong> The Qdrant track is finished — a connector (v3.1), server-side hybrid fusion (v3.2), production knobs plus a migration tool (v3.3) — and the last four releases turned to the node: v3.4 gave it a supervisor for its own Ollama, v3.5 let it drop the coordinator entirely, v3.6 gave a standalone node the retrieval stack too (by <em>moving</em> it into the shared library rather than copying it), and v3.7 packaged the lot as <a href="#idocs_bundled">one container</a> that carries its own Ollama and runs on your card, your CPU, or neither. v3.8, v3.9 and v3.10 are the current track: routing on <code>(capability, model)</code>, then a <a href="#idocs_tools">tool runtime</a> that lets a node drive supervised child processes, and then the first two real tools on it — <a href="#idocs_audio">speech in and speech out</a> behind the OpenAI audio API. Next on it, in v3.11: <strong>node profiles</strong>, so a coordinator says what a node should be running — which capabilities, which models pulled, what concurrency — and the node converges, <em>within</em> what its own config already allowed. The clamp runs on the node, deliberately: a clamp that runs on the hub is a clamp an attacker skips by being the hub, and the whole point is that a compromised coordinator cannot turn a fleet of GPU boxes into arbitrary code execution. All of it at zero new dependencies. Still on the table: teaching the <strong>coordinator</strong> about backend health as a typed signal (a status column and an alert, rather than a line in the node's log), <strong>active-active</strong> multi-coordinator load sharing and cross-hub replication for the <code>local</code> vector provider, an <strong>OTLP push</strong> exporter behind an explicit opt-in (<code>/metrics</code> is scrape-only today), and a dedicated cross-encoder reranker behind the existing <code>IReranker</code> seam. A fourth vector backend (Milvus, Weaviate) is the same shape as the third and will ship on real demand rather than for the comparison matrix.</p>
             <p class="text-muted"><small>Made by <a href="https://devart.solutions" target="_blank">Dev Art Solutions</a>. We build production-ready AI and agent systems. Say hello: <a href="mailto:hello@devart.solutions">hello@devart.solutions</a></small></p>
           </section>
 
