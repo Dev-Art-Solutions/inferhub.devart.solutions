@@ -626,7 +626,7 @@ curl http://localhost:5080/v1/audio/speech \
             <p>Twenty nodes has meant twenty <code>appsettings.json</code> files and twenty restarts. A <strong>node profile</strong> is one document on the coordinator that every matching node converges on:</p>
 
 <pre><code class="bash">curl -X PUT http://localhost:5080/api/admin/profiles/gpu-boxes \
-  -H "X-Admin-Key: $ADMIN" -H 'Content-Type: application/json' -d '{
+  -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d '{
     "selector": { "labels": { "tier": "gpu" } },
     "capabilities": { "embed": false },
     "tools": { "whisper": true, "piper": false },
