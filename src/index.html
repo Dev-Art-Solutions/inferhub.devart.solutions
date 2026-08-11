@@ -1826,14 +1826,15 @@ docker compose -f deploy/docker/docker-compose.yml \
 
             <h3 id="idocs_console_images">v3.19 — it drives the image track too <span class="badge bg-secondary">v3.19+</span></h3>
             <p>Phase 45's console answers <em>"I turned it on and nothing happened"</em>. The image track produces a different confusion — <strong>"it is running and I cannot tell how far along"</strong> — so the <strong>Images</strong> panel is <em>job-centric</em>: every job with its queue position, a step bar at <em>n</em> of <em>m</em>, elapsed time, which node has it, the megapixel-steps it cost, and a <strong>cancel button</strong>. Cancel is cooperative and the panel says so rather than pretending: a job cancelled at step 27 of 28 may still finish, and if it does you get the picture.</p>
-            <p>Underneath it, the thing that was invisible everywhere else. <strong>A recipe whose licence you have not accepted, or one too big for the VRAM budget you declared, is <em>not offered</em></strong> — the fleet never routes at it, so nobody spends a request finding out. That is the right routing behaviour and the worst possible diagnostic: at the hub it is indistinguishable from a recipe that does not exist, from one whose weights are still downloading, and from a typo in a config file. Four causes, four different fixes, one symptom: nothing. So the node reports every recipe it holds <em>with a reason</em>.</p>
+            <p>Underneath it, the thing that was invisible everywhere else. <strong>A recipe whose licence you have not accepted, or one too big for the VRAM budget you declared, is <em>not offered</em></strong> — the fleet never routes at it, so nobody spends a request finding out. That is the right routing behaviour and the worst possible diagnostic: at the hub it is indistinguishable from a recipe that does not exist, from one whose weights are still downloading, and from a typo in a config file. Four causes, four different fixes, one symptom: nothing. So the node reports every recipe it holds <em>with a reason</em> — here on a box sharing its card with a chat container, so 8192 MiB is held back rather than the default 2048:</p>
             <div class="table-responsive">
               <table class="table table-sm">
                 <thead><tr><th>Recipe</th><th>Offered for</th><th>Why not</th></tr></thead>
                 <tbody>
-                  <tr><td><code>sdxl</code></td><td>generate, edit</td><td></td></tr>
+                  <tr><td><code>sdxl</code></td><td>generate, edit</td><td>—</td></tr>
+                  <tr><td><code>sd15</code></td><td>generate, edit</td><td>—</td></tr>
                   <tr><td><code>sdxl-turbo</code></td><td>—</td><td>licence <code>sai-nc-community</code> is not permissive and is not in <code>Tools:Image:AcceptedLicenses</code></td></tr>
-                  <tr><td><code>qwen-image</code></td><td>—</td><td>wants 19000 MiB and does not fit this node's declared budget minus its reserve</td></tr>
+                  <tr><td><code>qwen-image</code></td><td>—</td><td>wants 19000 MiB; <code>BudgetMiB: 24576</code> minus <code>ReserveMiB: 8192</code> leaves 16384</td></tr>
                 </tbody>
               </table>
             </div>
