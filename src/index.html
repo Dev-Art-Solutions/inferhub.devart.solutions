@@ -152,6 +152,7 @@
           </li>
           <li class="nav-item"><a class="nav-link" href="#idocs_conversations">Conversations &amp; routing</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_csharp_client">C# client</a></li>
+          <li class="nav-item"><a class="nav-link" href="#idocs_python_client">Python client</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_builtwith">Built with</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_changelog">Roadmap &amp; status</a></li>
         </ul>
@@ -3006,8 +3007,47 @@ else
     Console.WriteLine($"hub &mdash; {probe.HubStatus!.Nodes?.Count ?? 0} node(s) connected");
 }</code></pre>
             <p><strong>The bug v1.7.0 shipped with, and what caught it.</strong> No live target was reachable when this phase was written, so <code>v1.7.0</code>&rsquo;s <code>NodeStatusResponse.Retrieval.Rerank</code> was typed <code>bool?</code> &mdash; guessed rather than verified. Installing <code>v1.7.0</code> from nuget.org into a clean directory and driving a real solo node in Docker (retrieval on, a live Ollama backend) threw a <code>JsonException</code> within minutes: the real node sends <code>"rerank":"none"</code>, a string &mdash; the config-level rerank <em>mode</em>, not a boolean, and not the same field as the per-request <code>RetrievalOptions.Rerank</code> flag chat/generate calls send. NuGet packages are immutable, so the fix shipped as <code>v1.7.1</code> the same day, and the whole check &mdash; both <code>ProbeAsync</code> outcomes, <code>GetNodeVersionAsync</code>, the full collection lifecycle, a real embed call &mdash; ran clean against that version, reinstalled from the registry. Said here rather than quietly folded in: it is exactly what the install-from-registry step in the release checklist exists to catch, and it caught something the very first time a live target was available to check against.</p>
-            <p><strong>The seven-release C# catch-up is done.</strong> The client froze at v1.0.0 against the coordinator&rsquo;s v2.x surface; the hub had grown seven versions of client-facing surface since &mdash; the <a href="#idocs_openai">OpenAI dialect</a>, <a href="#idocs_audio">audio in both directions</a>, <a href="#idocs_images">images</a> and <a href="#idocs_video">video</a> on the job model, <a href="#idocs_ingestion">ingestion</a> and <a href="#idocs_hybrid">search</a>, <a href="#idocs_providers">cloud providers a request can be steered to</a>, and <a href="#idocs_solo">a node that serves nearly all of it on its own address</a>. v1.1.0 through v1.7.1 closed that gap, additively across the whole <code>1.x</code> line, ending on the node. <strong>What&rsquo;s next</strong> is the other three languages: <code>spec/</code> becomes an executable conformance corpus, and Python, TypeScript and Go each reach their own <code>1.0.0</code> in three releases rather than eight, because that corpus is what makes the third and fourth language cheap.</p>
+            <p><strong>The seven-release C# catch-up is done.</strong> The client froze at v1.0.0 against the coordinator&rsquo;s v2.x surface; the hub had grown seven versions of client-facing surface since &mdash; the <a href="#idocs_openai">OpenAI dialect</a>, <a href="#idocs_audio">audio in both directions</a>, <a href="#idocs_images">images</a> and <a href="#idocs_video">video</a> on the job model, <a href="#idocs_ingestion">ingestion</a> and <a href="#idocs_hybrid">search</a>, <a href="#idocs_providers">cloud providers a request can be steered to</a>, and <a href="#idocs_solo">a node that serves nearly all of it on its own address</a>. v1.1.0 through v1.7.1 closed that gap, additively across the whole <code>1.x</code> line, ending on the node. <strong>What&rsquo;s next</strong> for C# is nothing &mdash; the surface is complete and the line is additive-only from here. The repository&rsquo;s own next move was <code>spec/</code> becoming an executable <a href="#idocs_python_client">conformance corpus</a>: thirteen cases, recorded from a real hub, that every language&rsquo;s client is driven against &mdash; not so each language re-discovers the same bugs the C# client already found the hard way.</p>
             <p>Repository: <a href="https://github.com/Dev-Art-Solutions/InferHub.Clients" target="_blank">github.com/Dev-Art-Solutions/InferHub.Clients</a> &middot; Package: <a href="https://www.nuget.org/packages/InferHub.Client/" target="_blank">nuget.org/packages/InferHub.Client</a></p>
+          </section>
+
+          <hr class="divider">
+
+          <!-- Python client
+		============================ -->
+          <section id="idocs_python_client">
+            <h2>Python client</h2>
+            <p class="lead"><strong>inferhub-client</strong> is the first client this repository shipped after C#, and the first proof of the bet the whole track is making: a <a href="https://github.com/Dev-Art-Solutions/InferHub.Clients/blob/main/conformance/cases.json">shared conformance corpus</a>, recorded from a real hub once, should make every language after the first one cheaper to trust. <code>v0.1.0</code> is the <strong>core</strong> surface &mdash; chat, generate (blocking and streaming), embeddings, model listing, status and health. Retrieval lands in <code>0.2.0</code>; modalities, admin and the node in <code>1.0.0</code>.</p>
+            <p>
+              <a href="https://pypi.org/project/inferhub-client/" target="_blank">
+                <img src="https://img.shields.io/pypi/v/inferhub-client.svg" alt="PyPI version" />
+              </a>
+              &nbsp;
+              <a href="https://github.com/Dev-Art-Solutions/InferHub.Clients" target="_blank">
+                <img src="https://img.shields.io/badge/GitHub-InferHub.Clients-24292f.svg" alt="GitHub: InferHub.Clients" />
+              </a>
+              &nbsp;
+              <a href="https://github.com/Dev-Art-Solutions/InferHub.Clients/blob/main/python/LICENSE" target="_blank">
+                <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" />
+              </a>
+            </p>
+            <p>One runtime dependency: <code>httpx</code>. No <code>pydantic</code> &mdash; dataclasses do the job, and every response carries an <code>extra</code> dict for fields this version does not know about yet, the same escape hatch the C# client&rsquo;s <code>[JsonExtensionData]</code> gives it.</p>
+            <pre><code class="bash">pip install inferhub-client</code></pre>
+            <p>Sync and async are <strong>two thin classes over the same rules</strong>, not one client with a sync-over-<code>asyncio.run</code> shim &mdash; the shim breaks the instant a sync call happens inside code already running an event loop, which is exactly where a web framework's request handler lives:</p>
+            <pre><code class="python">from inferhub_client import InferHubClient, ChatMessage, ChatRequest
+
+with InferHubClient("http://localhost:5080/", api_key="sk-client-token-1") as client:
+    answer = client.chat(ChatRequest(
+        model="llama3",
+        messages=[ChatMessage(role="user", content="Say hi in one word.")],
+    ))
+    print(answer.message.content)</code></pre>
+            <p>Streaming yields one chunk per NDJSON line, sync or async, and a terminal error chunk (<code>{"error": ..., "done": true}</code>) raises <code>InferHubError</code> out of the loop instead of the iterator hanging or ending quietly with a partial answer nobody was told about:</p>
+            <pre><code class="python">for chunk in client.chat_stream(ChatRequest(model="llama3", messages=[...])):
+    print(chunk.message.content, end="", flush=True)</code></pre>
+            <p><strong>Four of the thirteen conformance cases pass against this client unmodified</strong> &mdash; the mid-stream terminal error, <code>424</code> vs <code>404</code>, and both shapes <code>X-InferHub-Sources</code> arrives in (a JSON array, and a real hub has also sent it comma-separated). The other nine skip with a named reason rather than silently vanishing: they cover retrieval, the node and the OpenAI dialect, none of which <code>v0.1.0</code> reaches yet. That is the corpus doing its job on the second language it was ever pointed at.</p>
+            <p><strong>Verified twice, for real.</strong> Before the tag: chat, streaming, embeddings, status and health, both sync and async, against a live coordinator &mdash; including a real <code>404</code> whose message matched this client's parsing byte for byte. After the tag: <code>pip install inferhub-client</code> from the public PyPI index into a clean virtualenv, then the same live calls from that installed package &mdash; not an editable install, the thing anyone running that command today actually gets.</p>
+            <p>Repository: <a href="https://github.com/Dev-Art-Solutions/InferHub.Clients/tree/main/python" target="_blank">github.com/Dev-Art-Solutions/InferHub.Clients/python</a> &middot; Package: <a href="https://pypi.org/project/inferhub-client/" target="_blank">pypi.org/project/inferhub-client</a></p>
           </section>
 
           <hr class="divider">
