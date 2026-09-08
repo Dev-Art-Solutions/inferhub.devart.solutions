@@ -153,6 +153,7 @@
           <li class="nav-item"><a class="nav-link" href="#idocs_conversations">Conversations &amp; routing</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_csharp_client">C# client</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_python_client">Python client</a></li>
+          <li class="nav-item"><a class="nav-link" href="#idocs_js_client">TypeScript client</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_builtwith">Built with</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_changelog">Roadmap &amp; status</a></li>
         </ul>
@@ -3057,8 +3058,49 @@ print(answer.message.content, answer.source_ids)</code></pre>
             <p><strong><code>v1.0.0</code>: audio, images, admin and the node.</strong> <code>transcribe</code>/<code>transcribe_document</code> and <code>create_speech</code>/<code>stream_speech</code> reach <code>/v1/audio/*</code> &mdash; buffered and streamed synthesis are <em>the same method</em>, handing back a live response the caller owns, because this client never buffers audio to be friendly. <code>generate_image</code>/<code>edit_image</code>/<code>create_image_variation</code> plus the whole <code>/api/images/jobs</code> seam (<code>submit_*</code>, <code>watch_image_job</code>, <code>open_image_content</code> &mdash; read once, a retry is a <code>410</code>) reach images. There is <strong>no video module</strong>: the hub permanently <code>501</code>-refuses <code>GET /v1/videos</code> and remix, and a method that could only throw is not one this client publishes &mdash; the refusal is documented and pinned in a test instead. The admin plane (fleet ops, vector collections, profiles, the full model lifecycle, usage, clients, a live SSE stream) lives on the <em>same</em> two client classes as everything else &mdash; a caller reaches it with an admin key instead of a client key, since Python has no interface-segregation reason to force a second class the way the C# client's published interfaces do. And <code>probe()</code> reads <code>/api/status</code> once and reports whether the address is a coordinator or a solo node, discriminated on whether the body carries a <code>mode</code> field at all &mdash; the same corpus case that caught a real bug in the C# client (<code>rerank</code> typed as a string, not a bool) is why Python's node types were never wrong to begin with.</p>
             <p>Ten of the thirteen conformance cases now pass against this client unmodified &mdash; the mid-stream terminal error, <code>424</code> vs <code>404</code>, both <code>X-InferHub-Sources</code> shapes, the partial-ingest body, the reranked-order hits, the chunk index typed as a string, both <code>probe()</code> shapes, and the <code>capability_unavailable</code>/<code>Retry-After</code> image-job refusal. The remaining three skip with a named reason: the <code>/v1/chat/completions</code> OpenAI dialect stays dotnet-only by design (the polyglot track's own D3), never a gap in Python's coverage of its own surface.</p>
             <p><strong>Verified against a real, running coordinator, and what still could not be.</strong> <code>probe()</code>, the fleet listing, the model matrix, a real usage query (four rows, matched field-for-field against <code>curl</code>), the clients and profiles listings, and both refusal shapes (<code>get_node_version</code> against a hub, <code>generate_image</code> against a node with no image capability) were all driven against this project's own coordinator &mdash; from the working copy, and again after <code>pip install inferhub-client==1.0.0</code> from the public PyPI index into a clean virtualenv, byte for byte the same. Not established: a successful transcription, synthesis or image render &mdash; this coordinator's one node has no TTS or image backend, so those success shapes are derived from the C# client's own recorded and derived payloads and the conformance corpus, said here rather than left implicit.</p>
-            <p><strong>What's next.</strong> Python is at <code>1.0.0</code> and additive-only from here — the cut point the polyglot track named in advance (phases 15–18: the corpus, then Python's three releases). TypeScript is next (core, retrieval, then modalities/admin/node again in three releases, phases 19–21), then Go (22–24) with the same shape, and the track closes with a verification day (25) that installs every published package from its own registry and drives it against a real coordinator <em>and</em> a real solo node.</p>
+            <p><strong>What's next.</strong> Python is at <code>1.0.0</code> and additive-only from here — the cut point the polyglot track named in advance (phases 15–18: the corpus, then Python's three releases). <a href="#idocs_js_client">TypeScript is next</a> (core, retrieval, then modalities/admin/node again in three releases, phases 19–21), then Go (22–24) with the same shape, and the track closes with a verification day (25) that installs every published package from its own registry and drives it against a real coordinator <em>and</em> a real solo node.</p>
             <p>Repository: <a href="https://github.com/Dev-Art-Solutions/InferHub.Clients/tree/main/python" target="_blank">github.com/Dev-Art-Solutions/InferHub.Clients/python</a> &middot; Package: <a href="https://pypi.org/project/inferhub-client/" target="_blank">pypi.org/project/inferhub-client</a></p>
+          </section>
+
+          <hr class="divider">
+
+          <!-- TypeScript client
+		============================ -->
+          <section id="idocs_js_client">
+            <h2>TypeScript client</h2>
+            <p class="lead"><strong>inferhub-client</strong> is the third client this repository ships and the second proof of the same bet: a <a href="https://github.com/Dev-Art-Solutions/InferHub.Clients/blob/main/conformance/cases.json">shared conformance corpus</a>, recorded from a real hub once, makes each language after the first cheaper to trust. <code>v0.1.0</code> ships the <strong>core</strong> surface &mdash; chat, generate (blocking and streaming), embeddings, model listing, status and health. Retrieval lands in <code>v0.2.0</code>; modalities, admin and the node close the surface at <code>v1.0.0</code>, the same three-release shape <a href="#idocs_python_client">Python</a> already proved.</p>
+            <p>
+              <a href="https://www.npmjs.com/package/inferhub-client" target="_blank">
+                <img src="https://img.shields.io/npm/v/inferhub-client.svg" alt="npm version" />
+              </a>
+              &nbsp;
+              <a href="https://github.com/Dev-Art-Solutions/InferHub.Clients" target="_blank">
+                <img src="https://img.shields.io/badge/GitHub-InferHub.Clients-24292f.svg" alt="GitHub: InferHub.Clients" />
+              </a>
+              &nbsp;
+              <a href="https://github.com/Dev-Art-Solutions/InferHub.Clients/blob/main/js/LICENSE" target="_blank">
+                <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" />
+              </a>
+            </p>
+            <p><strong>Zero runtime dependencies.</strong> No SSE library, no <code>node-fetch</code> &mdash; <code>fetch</code> and <code>ReadableStream</code> are the platform on Node &ge; 18, every evergreen browser, Deno and Bun alike, so the source has no runtime branch for which one it is running on. Published as both ESM and CJS from one build, so <code>import</code> and <code>require</code> both resolve without a second copy to maintain.</p>
+            <pre><code class="bash">npm install inferhub-client</code></pre>
+            <p>Python needed two client classes because Python has two incompatible calling conventions and a sync-over-<code>asyncio.run</code> shim breaks the moment a sync call happens inside code already running an event loop. TypeScript has one async convention, so there is <strong>one class</strong>: blocking calls return a <code>Promise</code>, streaming calls return an <code>AsyncIterable</code>, nothing to keep in sync between a sync façade and an async one that does not exist here:</p>
+            <pre><code class="typescript">import { InferHubClient } from "inferhub-client";
+
+const client = new InferHubClient({ baseUrl: "http://localhost:5080/", apiKey: "sk-client-token-1" });
+const answer = await client.chat({
+  model: "llama3",
+  messages: [{ role: "user", content: "Say hi in one word." }],
+});
+console.log(answer.message.content);</code></pre>
+            <p>Streaming reads the same newline-delimited JSON every other language's client reads, through one shared line-buffering async generator for both <code>chatStream</code> and <code>generateStream</code>; a terminal error chunk (<code>{"error": ..., "done": true}</code>) raises <code>InferHubError</code> out of the iterator instead of the loop hanging or ending quietly with a partial answer:</p>
+            <pre><code class="typescript">for await (const chunk of client.chatStream({ model: "llama3", messages: [...] })) {
+  process.stdout.write(chunk.message.content);
+}</code></pre>
+            <p>Every request type accepts an <code>extra</code> record merged straight into the outgoing body, and every response type carries one back for fields this version does not model &mdash; the same escape hatch the Python client's <code>extra</code> dict and the C# client's <code>[JsonExtensionData]</code> give theirs. <code>servedBy</code> and <code>sourceIds</code> are already read off the response headers even though <code>v0.1.0</code> has no way yet to <em>request</em> retrieval, the same head start Python's core release took.</p>
+            <p><strong>Verified against a real, running coordinator</strong> &mdash; not just the mocked test suite (<code>fetch</code> mocked, no test reaches a live hub): <code>chat</code>, <code>chatStream</code>, <code>embed</code>, <code>listModels</code>, <code>getStatus</code> and <code>ping</code> all ran against this project's own coordinator, and a real <code>404</code> (<code>model 'llama3' not found</code>) confirmed the error mapping matches actual hub output byte for byte. Then confirmed again from <code>npm install inferhub-client</code> against the public registry, into a clean scaffold outside the repository, both the <code>import</code> and <code>require</code> builds resolving.</p>
+            <p><strong>What's next.</strong> <code>js/v0.2.0</code> adds retrieval &mdash; the vector data-plane, the <code>X-InferHub-Retrieve*</code> headers, ingestion and search, the same plane Python's <code>v0.2.0</code> shipped. <code>js/v1.0.0</code> closes the surface with audio, images, admin and <code>probe()</code> for telling a coordinator from a solo node. Go is after that (phases 22&ndash;24), and the track closes with a verification day (25) across every published package and registry.</p>
+            <p>Repository: <a href="https://github.com/Dev-Art-Solutions/InferHub.Clients/tree/main/js" target="_blank">github.com/Dev-Art-Solutions/InferHub.Clients/js</a> &middot; Package: <a href="https://www.npmjs.com/package/inferhub-client" target="_blank">npmjs.com/package/inferhub-client</a></p>
           </section>
 
           <hr class="divider">
