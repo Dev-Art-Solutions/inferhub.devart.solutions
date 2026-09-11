@@ -154,6 +154,7 @@
           <li class="nav-item"><a class="nav-link" href="#idocs_csharp_client">C# client</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_python_client">Python client</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_js_client">TypeScript client</a></li>
+          <li class="nav-item"><a class="nav-link" href="#idocs_go_client">Go client</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_builtwith">Built with</a></li>
           <li class="nav-item"><a class="nav-link" href="#idocs_changelog">Roadmap &amp; status</a></li>
         </ul>
@@ -3108,8 +3109,58 @@ console.log(answer.message.content, answer.sourceIds);</code></pre>
             <p><strong><code>v1.0.0</code>: audio, images, admin and the node.</strong> <code>transcribe</code>/<code>transcribeDocument</code> and <code>createSpeech</code>/<code>streamSpeech</code> reach <code>/v1/audio/*</code> &mdash; buffered and streamed synthesis are <em>the same method</em>, handing back the live <code>Response</code> the caller consumes, because this client never buffers audio to be friendly. <code>generateImage</code>/<code>editImage</code>/<code>createImageVariation</code> plus the whole <code>/api/images/jobs</code> seam (<code>submitImage*</code>, <code>watchImageJob</code>, <code>openImageContent</code> &mdash; read once, a retry is a <code>410</code>) reach images, over <code>FormData</code> with no new dependency. There is <strong>no video module</strong>: the hub permanently <code>501</code>-refuses <code>GET /v1/videos</code> and remix, and a method that could only throw is not one this client publishes &mdash; <code>VideoErrorCodes.NOT_SUPPORTED</code> documents the refusal instead. The admin plane (fleet ops, vector collections, profiles, the full model lifecycle, usage, clients, a live SSE stream) lives on the <em>same</em> <code>InferHubClient</code> as everything else &mdash; a caller reaches it with an admin key instead of a client key, since a plain TypeScript class has no interface-segregation reason to force a second one the way the C# client's published interfaces do. And <code>probe()</code> reads <code>/api/status</code> once and reports whether the address is a coordinator or a solo node, discriminated on whether the body carries a <code>mode</code> field at all &mdash; the same corpus case that caught a real bug in the C# client (<code>rerank</code> typed as a string, not a boolean) is why this client's node types were never wrong to begin with.</p>
             <p>Ten of the thirteen conformance cases now pass against this client unmodified &mdash; the mid-stream terminal error, <code>424</code> vs <code>404</code>, both <code>X-InferHub-Sources</code> shapes, the partial-ingest body, the reranked-order hits, the chunk index typed as a string, both <code>probe()</code> shapes, and the <code>capability_unavailable</code>/<code>Retry-After</code> image-job refusal. The remaining three skip with a named reason: the <code>/v1/chat/completions</code> OpenAI dialect stays dotnet-only by design (the polyglot track's own D3), never a gap in this client's coverage of its own surface.</p>
             <p><strong>Verified against a real, running coordinator</strong> &mdash; not just the mocked test suite (<code>fetch</code> mocked, no test reaches a live hub): <code>chat</code> and <code>chat(&hellip;, retrieval)</code> both ran against this project's own coordinator in <code>v0.2.0</code>, the latter raising <code>InferHubRetrievalException</code> with the hub's own <code>424</code>. In <code>v1.0.0</code>, <code>probe()</code> (<code>kind: "hub"</code>, one node), <code>listNodes</code>, <code>listModelMatrix</code> (29 models across 1 node) and <code>queryUsage</code> (four real rows) all ran against the same coordinator with no admin key needed &mdash; this coordinator's loopback requests need none. <code>generateImage</code>, <code>createSpeech</code> and <code>listNodeCollections</code> all reproduced the expected <code>404</code>s: this coordinator's one node has no TTS or image backend and its vector/corpus provider reports <code>stopped</code>, the same gap the Python client's own releases already recorded rather than hid. Then confirmed again from <code>npm install inferhub-client@1.0.0</code> against the public registry, into a clean scaffold outside the repository. Not established: a successful transcription, synthesis or image render, or a live node-collection round trip &mdash; those success shapes are derived from the C# and Python clients' own recorded and derived payloads and the conformance corpus, said here rather than left implicit.</p>
-            <p><strong>What's next.</strong> TypeScript is at <code>1.0.0</code> and additive-only from here. Go is next (phases 22&ndash;24) with the same three-release shape, and the track closes with a verification day (25) across every published package and registry.</p>
+            <p><strong>What's next.</strong> TypeScript is at <code>1.0.0</code> and additive-only from here. <a href="#idocs_go_client">Go has shipped its own core release</a> (<code>v0.1.0</code>, phase 22 of 22&ndash;24), retrieval and the 1.0 close follow, and the track ends with a verification day (25) across every published package and registry.</p>
             <p>Repository: <a href="https://github.com/Dev-Art-Solutions/InferHub.Clients/tree/main/js" target="_blank">github.com/Dev-Art-Solutions/InferHub.Clients/js</a> &middot; Package: <a href="https://www.npmjs.com/package/inferhub-client" target="_blank">npmjs.com/package/inferhub-client</a></p>
+          </section>
+
+          <hr class="divider">
+
+          <!-- Go client
+		============================ -->
+          <section id="idocs_go_client">
+            <h2>Go client</h2>
+            <p class="lead">The fourth and last language of the <a href="https://github.com/Dev-Art-Solutions/InferHub.Clients/blob/main/conformance/cases.json">shared conformance corpus</a> track, and deliberately the last: if Go is not the boring one, the corpus is not finished. <code>v0.1.0</code> ships the <strong>core</strong> surface &mdash; chat, generate (blocking and streaming), embeddings, model listing, status and health &mdash; the same three-release shape <a href="#idocs_python_client">Python</a> and <a href="#idocs_js_client">TypeScript</a> already proved. Retrieval lands in <code>v0.2.0</code>, modalities/admin/the node and <code>1.0.0</code> close it out.</p>
+            <p>
+              <a href="https://pkg.go.dev/github.com/Dev-Art-Solutions/InferHub.Clients/go" target="_blank">
+                <img src="https://img.shields.io/badge/pkg.go.dev-v0.1.0-00add8.svg" alt="Go package" />
+              </a>
+              &nbsp;
+              <a href="https://github.com/Dev-Art-Solutions/InferHub.Clients" target="_blank">
+                <img src="https://img.shields.io/badge/GitHub-InferHub.Clients-24292f.svg" alt="GitHub: InferHub.Clients" />
+              </a>
+              &nbsp;
+              <a href="https://github.com/Dev-Art-Solutions/InferHub.Clients/blob/main/go/LICENSE" target="_blank">
+                <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" />
+              </a>
+            </p>
+            <p><strong>Stdlib <code>net/http</code> only</strong> &mdash; <code>go.mod</code> has no <code>require</code> block and no <code>go.sum</code>, the strictest of the three dependency budgets this track set. A module in a subdirectory only resolves from a tag prefixed with that subdirectory, which is why every language in this repository tags <code>&lt;lang&gt;/vX.Y.Z</code> rather than Go being special-cased in the one place getting it wrong is silent for a week.</p>
+            <pre><code class="bash">go get github.com/Dev-Art-Solutions/InferHub.Clients/go@v0.1.0</code></pre>
+            <p><code>context.Context</code> first on every method, errors as values &mdash; no exceptions, no sync/async split to reconcile the way Python's two classes do:</p>
+            <pre><code class="go">client, _ := inferhub.NewClient(inferhub.ClientOptions{BaseURL: "http://localhost:5080/", APIKey: "sk-client-token-1"})
+
+resp, err := client.Chat(ctx, inferhub.ChatRequest{
+    Model:    "llama3",
+    Messages: []inferhub.ChatMessage{{Role: "user", Content: "Say hi in one word."}},
+})
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(resp.Message.Content)</code></pre>
+            <p><code>ChatStream</code>/<code>GenerateStream</code> hand back a <code>bufio.Scanner</code>-shaped iterator &mdash; <code>Next()</code>/<code>Value()</code>/<code>Err()</code>/<code>Close()</code>, the same shape as <code>database/sql.Rows</code> and <code>bufio.Scanner</code> itself, chosen over a Go 1.23 <code>iter.Seq2</code> range-over-func so nothing about the streaming contract depends on the newest language feature landing in every caller's toolchain. A terminal error chunk (<code>{"error": ..., "done": true}</code>) surfaces from <code>Next</code>/<code>Err</code> instead of the loop hanging on a partial answer nobody was told about:</p>
+            <pre><code class="go">stream, _ := client.ChatStream(ctx, inferhub.ChatRequest{Model: "llama3", Messages: msgs})
+defer stream.Close()
+for stream.Next() {
+    fmt.Print(stream.Value().Message.Content)
+}
+if err := stream.Err(); err != nil {
+    log.Fatal(err)
+}</code></pre>
+            <p>Errors are <strong>one flat <code>*Error</code> type with a <code>Kind</code> field</strong> (plain Ollama string, the OpenAI-dialect envelope, or a retrieval refusal) rather than a Python/TypeScript-style exception hierarchy &mdash; embedding an anonymous <code>*Error</code> inside a wrapper type in Go collides the embedded field's implicit name with its own promoted <code>Error()</code> method, silently breaking the wrapper's own <code>error</code> interface. A Go-only correction, not a wire difference, and it is why this client's error type looks less like its siblings than everything else about it does.</p>
+            <p>Every request type carries a <code>JSONDict</code>-typed <code>Extra</code> field merged into the outgoing body, and every response type carries one back for fields this version does not model &mdash; the same escape hatch Python's <code>extra</code> dict, TypeScript's <code>extra</code> record and C#'s <code>[JsonExtensionData]</code> give theirs. <code>X-InferHub-Served-By</code> and <code>X-InferHub-Sources</code> (both the JSON-array shape and the comma-separated fallback a real hub has actually sent) are already read into every response, ahead of having any way to <em>request</em> retrieval &mdash; the same head start every other core release in this track took.</p>
+            <p>Four of the thirteen conformance cases pass against this client unmodified &mdash; the mid-stream terminal error, <code>424</code> vs <code>404</code>, and both <code>X-InferHub-Sources</code> shapes. The other nine skip with a named reason (<code>probe</code>, the OpenAI dialect, retrieval, ingestion, search, chunks) rather than being filtered out of the shared corpus file: a case outside this version's surface is still read and still accounted for, just not yet exercised.</p>
+            <p><strong>Verified from the published module, not the working copy.</strong> <code>go get github.com/Dev-Art-Solutions/InferHub.Clients/go@v0.1.0</code> into a clean scratch module outside the repository, resolved by the Go module proxy straight off the tagged public repo &mdash; Go has no separate publish step the way npm and PyPI do. From that installed module, against this project's own running coordinator (<code>3.37.0</code>, one node): <code>Status</code>, <code>ListModels</code> (29 models), <code>Chat</code> against <code>qwen2.5:0.5b</code>, <code>Embed</code> against <code>nomic-embed-text</code> (768 dimensions), a 30-chunk <code>ChatStream</code>, and a real <code>404</code> for an unknown model matching the corpus's plain-string envelope byte for byte.</p>
+            <p><strong>What's next.</strong> Go's own retrieval release (<code>v0.2.0</code>, phase 23) is next, then modalities/admin/the node close it at <code>v1.0.0</code> (phase 24) &mdash; and the track ends with a verification day (25) that installs every published package from its own registry and drives it against a real coordinator <em>and</em> a real solo node.</p>
+            <p>Repository: <a href="https://github.com/Dev-Art-Solutions/InferHub.Clients/tree/main/go" target="_blank">github.com/Dev-Art-Solutions/InferHub.Clients/go</a> &middot; Package: <a href="https://pkg.go.dev/github.com/Dev-Art-Solutions/InferHub.Clients/go" target="_blank">pkg.go.dev/github.com/Dev-Art-Solutions/InferHub.Clients/go</a></p>
           </section>
 
           <hr class="divider">
