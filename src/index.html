@@ -1447,7 +1447,7 @@ GET /api/status          nodes[].modelSlots, nodes[].modelsInFlight</code></pre>
             <h3 id="idocs_engine_slots">Slots the engine reports <span class="badge bg-secondary">v3.73+</span></h3>
             <p><strong>v3.72&rsquo;s number came from configuration, and only Ollama had one.</strong> llama.cpp runs several requests per model at once by default &mdash; <code>llama-server</code> picks its slot count itself, and picked 4 on our test box &mdash; and it says so: <code>GET /props</code> answers <code>total_slots</code>. Since v3.73 a llama.cpp engine is asked, for each <em>loaded</em> model, and that number travels with the model to the coordinator, which uses it before the node&rsquo;s own.</p>
             <ul>
-              <li><strong>The question loads nothing.</strong> A llama.cpp router loads any model a request names, so the node asks with <code>autoload=false</code>; an unloaded model has no number until it loads. A warm or an unload re-reports the node&rsquo;s models at once.</li>
+              <li><strong>The question loads nothing.</strong> A llama.cpp router loads any model a request names, so the node asks with <code>autoload=false</code>; an unloaded model has no number until it loads. A warm or an unload re-reports the node&rsquo;s models at once &mdash; for the unload since v3.73.1, which waits for llama.cpp to finish stopping the model before it reports.</li>
               <li><strong>A node with several engines</strong> declares its Ollama&rsquo;s number as the default for the models nothing answered for. <code>Node:ModelSlots</code> still overrides that default; an engine&rsquo;s own answer overrides both.</li>
               <li><code>GET /api/status</code> shows the answers as <code>nodes[].slotsByModel</code>. <code>/api/tags</code> and the fleet&rsquo;s model list are unchanged &mdash; one node&rsquo;s count is not the fleet&rsquo;s.</li>
             </ul>
@@ -4086,7 +4086,7 @@ case inferhub.TargetSoloNode:
                   <tr><td>106</td><td><a href="#idocs_provider_limits">Provider limits</a> &mdash; a ChatGPT plan&rsquo;s five-hour and weekly windows, rate limits and the month&rsquo;s spend against a budget, for the coordinator and for each node</td><td><code>v3.70.0</code></td></tr>
                   <tr><td>107</td><td><a href="#idocs_jobs_side_by_side">Jobs side by side</a> &mdash; a node runs the jobs the hub sends it at once, a cancelled chat, picture or clip now stops on the node, and an Ollama node&rsquo;s stream streams</td><td><code>v3.71.0</code></td></tr>
                   <tr><td>108</td><td><a href="#idocs_model_slots">A free slot for the model</a> &mdash; the coordinator sends a request to a node whose engine can start it now, not one where it would wait behind the same model</td><td><code>v3.72.0</code></td></tr>
-                  <tr><td>109</td><td><a href="#idocs_engine_slots">Slots the engine reports</a> &mdash; a llama.cpp model says how many requests it runs at once, asked without loading anything, and the coordinator uses that number before the node&rsquo;s</td><td><code>v3.73.0</code></td></tr>
+                  <tr><td>109</td><td><a href="#idocs_engine_slots">Slots the engine reports</a> &mdash; a llama.cpp model says how many requests it runs at once, asked without loading anything, and the coordinator uses that number before the node&rsquo;s</td><td><code>v3.73.1</code></td></tr>
                 </tbody>
               </table>
             </div>
